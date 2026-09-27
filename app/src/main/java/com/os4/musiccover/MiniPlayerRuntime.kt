@@ -8225,7 +8225,15 @@ private class MiniPlayerController(
         // Main's cover follows the pill's stand-in, and only a settled answer is one: inside a
         // morph the suppression is down for the module's own reason, and while the music's row is
         // being rebuilt it is down for the notification's (2026-09-27).
-        if (musicSettled && morph == null && group == null) MiniPlayerRuntime.noteStandInChanged()
+        //
+        // The music out as its card is settled too, though it is not in the row: with other
+        // islands holding the row it stays out as its card, and this was the one state the cover
+        // was never re-decided in. A notification island arriving takes the cover away as the
+        // music goes down for the switch, and with the music settled there only as its card, that
+        // answer was never revisited - the lock screen kept the plain wallpaper with the card up
+        // and the row full of notifications (reported 2026-09-27).
+        val settled = musicSettled || musicCarded()
+        if (settled && morph == null && group == null) MiniPlayerRuntime.noteStandInChanged()
         if (morph == null && keyguardOwned &&
             (nativeRequested || Main.coverSceneActive())) ensureNativeHeaderVisible()
         val log = "nativeRequested=$nativeRequested " +
@@ -8261,11 +8269,6 @@ private class MiniPlayerController(
 
     /** Whether the pill is standing in for the OEM card right now. See the object's accessor. */
     fun standsInForCard(): Boolean {
-        // The music out of the row - a notification's morph, a switch, a flight - is not the lock
-        // screen changing what it shows, and the suppression is down for the whole of it. The last
-        // settled answer stands until the rows are back, so a beat of list rebuilding cannot read
-        // as "the big card is showing again" (2026-09-27).
-        if (!musicSettledNow()) return standsInSettled
         // A morph on its own springs has already decided: the card coming out is the card's
         // moment, the card folding back into the pill is the pill's - and the suppression is down
         // for both, which is why it cannot be the answer while one runs. Held by a finger it is not
@@ -8275,6 +8278,22 @@ private class MiniPlayerController(
         // A group between its own making and its morph's: its direction is the direction the rows
         // are being taken, which is the same question.
         group?.let { return it.down }
+        // The music out as its card with the row left to other islands: what the lock screen is
+        // showing is the system's own card, so the pill is standing in for nothing - however the
+        // suppression reads. The suppression stays up in this state (it is what keeps the OEM
+        // header hidden while the row is rebuilt), and because the music never comes back to the
+        // row, the settled answer below used to keep saying "standing in" for as long as a
+        // notification island was there: the song's background was taken away when the music went
+        // out as its card and never came back, which is what was reported (2026-09-27).
+        if (musicCarded()) {
+            standsInSettled = false
+            return false
+        }
+        // The music out of the row with one of those still running - a notification's morph, a
+        // switch, a flight - is not the lock screen changing what it shows, and the suppression is
+        // down for the whole of it. The last settled answer stands until the rows are back, so a
+        // beat of list rebuilding cannot read as "the big card is showing again".
+        if (!musicSettledNow()) return standsInSettled
         standsInSettled = nativeSuppressionRequested
         return standsInSettled
     }

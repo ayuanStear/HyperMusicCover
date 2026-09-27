@@ -6620,7 +6620,19 @@ public class Main extends XposedModule {
 
     /** Enter through the same route as the OEM artwork, with MiniPlayerRuntime owning the bridge. */
     static void miniPlayerEnterCover() {
-        if (!miniPlayerCanShow()) return;
+        if (!miniPlayerCanShow()) {
+            // Which of the four the entry died on, because three of them are normal and one is
+            // not: a pull up into the card asks for the cover while the card is still on its way,
+            // and the media data has to already say "up" for this to let it through.
+            Xp.log(TAG + "cover entry refused: card=" + sCardShowing
+                    + " eligible=" + islandsDisplayEligible(false)
+                    + " centre=" + miniControlCenterUp()
+                    + " scene=" + coverSceneActive()
+                    + " keyguard=" + keyguardShowing()
+                    + " onKeyguard=" + onKeyguardNow()
+                    + " screen=" + screenOnCached());
+            return;
+        }
         if (!sAuto) {
             CoverMorphLayer.cancel();
             setCoverEnabled(true, true, false);
