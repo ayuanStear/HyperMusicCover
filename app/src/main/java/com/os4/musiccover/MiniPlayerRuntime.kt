@@ -736,6 +736,13 @@ object MiniPlayerRuntime {
      * goes (2026-09-27). Read off the suppression itself rather than off the presentation the
      * policy would choose, because that is also what is true in the full-screen AOD - where the
      * OEM card is put back and the island is only standing by.
+     *
+     * The answer is the settled one, not the suppression's momentary value: the module's own
+     * moving parts put the card back for a moment (every morph between the two starts by dropping
+     * the suppression), and the music's island leaves the row for a beat while a notification's
+     * row is rebuilt. Neither is the lock screen changing what it shows, and reading them as one
+     * made Main start a second cover entry from inside the first (2026-09-27). While a morph runs
+     * the answer is the end it is going to, which is the one thing the suppression cannot say.
      */
     @JvmStatic fun standsInForCard(): Boolean =
         synchronized(controllers) { controllers.values.any { it.controller.standsInForCard() } }
@@ -747,6 +754,8 @@ object MiniPlayerRuntime {
         val now = standsInForCard()
         if (now == lastStandIn) return
         lastStandIn = now
+        Xp.log("MCMini: the super island " +
+            (if (now) "takes the card's place" else "gives the card back") + " (the cover follows it)")
         Main.onMiniStandInChanged()
     }
 
@@ -3067,6 +3076,14 @@ private class MiniPlayerController(
         val view = player ?: return null
         if (controller?.takeIf(::isUsable) == null || noteMorphKey != null || flight != null ||
             exchange != null) return null
+        // One morph at a time, and one group. A second one started from inside the first - the
+        // cover entry answering the suppression the first had just dropped (2026-09-27) - left two
+        // morphs over the same card, the artwork's push dropped as stale, and the card's own title
+        // and artist faded out by one of them and put back by neither.
+        if (morph != null || group != null) {
+            trace("group refused: a ${if (morph != null) "morph" else "group"} is already running")
+            return null
+        }
         if (toNative && selectedIsland != MUSIC_ISLAND && smallKey != MUSIC_ISLAND) return null
         endSwap()
         endRow()
@@ -8139,8 +8156,7 @@ private class MiniPlayerController(
         // The music's choice of card or pill is the row's only while the music is settled in
         // the row. Out as its card with other islands in the row, the row still shows, and the
         // card with it; on its way out or in, the card is its morph's.
-        val musicSettled = MUSIC_ISLAND in islandKeys && noteMorphKey != MUSIC_ISLAND &&
-            exchange?.has(MUSIC_ISLAND) != true
+        val musicSettled = musicSettledNow()
         // A notification's morph is not the media card's: the card stays put away. The music's own
         // flight is: the row stays up under it, through a scene too.
         val cardMoving = (morph != null || group != null) &&
@@ -8206,6 +8222,10 @@ private class MiniPlayerController(
             view.setInteractionsEnabled(canShow() && !controlCenterOpen && !MiniPlayerScene.aodActive)
         }
         updateNativeSuppression(suppressCard && musicSettled)
+        // Main's cover follows the pill's stand-in, and only a settled answer is one: inside a
+        // morph the suppression is down for the module's own reason, and while the music's row is
+        // being rebuilt it is down for the notification's (2026-09-27).
+        if (musicSettled && morph == null && group == null) MiniPlayerRuntime.noteStandInChanged()
         if (morph == null && keyguardOwned &&
             (nativeRequested || Main.coverSceneActive())) ensureNativeHeaderVisible()
         val log = "nativeRequested=$nativeRequested " +
@@ -8227,13 +8247,37 @@ private class MiniPlayerController(
         nativeSuppressionRequested = suppress
         if (suppress) updateHeader()
         else if (wasRequested || suppressedHeaders.hasOverrides) restoreHeader()
-        // Main's cover follows this: the song's background belongs to the BIG card, so the pill
-        // taking the card's place is the one thing that takes it away. Told only when it moves.
-        if (wasRequested != suppress) MiniPlayerRuntime.noteStandInChanged()
     }
 
+    /**
+     * Whether the music is in the row with nothing moving over it: the only moment the suppression
+     * answers the question of what the lock screen is showing.
+     */
+    private fun musicSettledNow(): Boolean = MUSIC_ISLAND in islandKeys &&
+        noteMorphKey != MUSIC_ISLAND && exchange?.has(MUSIC_ISLAND) != true
+
+    /** The last answer given while the rows were settled. */
+    private var standsInSettled = false
+
     /** Whether the pill is standing in for the OEM card right now. See the object's accessor. */
-    fun standsInForCard(): Boolean = nativeSuppressionRequested
+    fun standsInForCard(): Boolean {
+        // The music out of the row - a notification's morph, a switch, a flight - is not the lock
+        // screen changing what it shows, and the suppression is down for the whole of it. The last
+        // settled answer stands until the rows are back, so a beat of list rebuilding cannot read
+        // as "the big card is showing again" (2026-09-27).
+        if (!musicSettledNow()) return standsInSettled
+        // A morph on its own springs has already decided: the card coming out is the card's
+        // moment, the card folding back into the pill is the pill's - and the suppression is down
+        // for both, which is why it cannot be the answer while one runs. Held by a finger it is not
+        // decided yet, so the answer stays where it was until the lift.
+        val running = morph
+        if (running != null) return if (running.held) standsInSettled else !running.toNative
+        // A group between its own making and its morph's: its direction is the direction the rows
+        // are being taken, which is the same question.
+        group?.let { return it.down }
+        standsInSettled = nativeSuppressionRequested
+        return standsInSettled
+    }
 
     private fun ensureNativeHeaderVisible() {
         val current = transitionHeader() ?: return

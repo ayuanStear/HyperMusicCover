@@ -6605,9 +6605,19 @@ public class Main extends XposedModule {
      * between the two, not at its end, so the clock, the wallpaper and the artwork set out with the
      * card's own motion. The exit is the ordinary scene exit and the entry the ordinary scene
      * entry, so both directions keep their animations; nothing here is a snap.
+     *
+     * Never answered from inside an entry or an exit of our own: every morph between the two puts
+     * the card back for a moment first, and answering that from the entry which started it began a
+     * second entry inside the first - two morphs over the same card, the artwork's push dropped as
+     * stale, and the card left with no title and no artist (2026-09-27). What is left for later is
+     * held and asked again once the entry has finished, so nothing is lost.
      */
     static void onMiniStandInChanged() {
         if (!sAuto) return;
+        if (sCoverToggleDepth > 0) {
+            sStandInPending = true;
+            return;
+        }
         Boolean want = coverWantedByCard();
         if (want == null) return;
         if (!want) {
@@ -6616,6 +6626,11 @@ public class Main extends XposedModule {
             enterFromTap("the big card is showing again");
         }
     }
+
+    /** How many of our own entries or exits are on the stack right now (see onMiniStandInChanged). */
+    private static int sCoverToggleDepth;
+    /** A stand-in change told to us while one of those was running, to be asked about after it. */
+    private static boolean sStandInPending;
 
     /** The wake reached the clock before the SCREEN_ON broadcast did. */
     static void noteAwake() {
@@ -8548,14 +8563,46 @@ public class Main extends XposedModule {
 
     private static void exitFromTap(String why) {
         long t0 = System.nanoTime();
-        exitFromTapNow(why);
+        sCoverToggleDepth++;
+        try {
+            exitFromTapNow(why);
+        } finally {
+            sCoverToggleDepth--;
+            askStandInAfterToggle();
+        }
         noteToggleCost("out", System.nanoTime() - t0);
     }
 
     private static void enterFromTap(String why) {
         long t0 = System.nanoTime();
-        enterFromTapNow(why);
+        sCoverToggleDepth++;
+        try {
+            enterFromTapNow(why);
+        } finally {
+            sCoverToggleDepth--;
+            askStandInAfterToggle();
+        }
         noteToggleCost("in", System.nanoTime() - t0);
+    }
+
+    /**
+     * A stand-in change that arrived while our own entry or exit was running, asked about now that
+     * it is over - posted, so that the answer is a fresh one rather than the state the entry was
+     * still settling inside of.
+     */
+    private static void askStandInAfterToggle() {
+        if (sCoverToggleDepth > 0 || !sStandInPending) return;
+        sStandInPending = false;
+        main().post(new Runnable() {
+            @Override
+            public void run() {
+                if (sCoverToggleDepth > 0) {
+                    sStandInPending = true;
+                    return;
+                }
+                onMiniStandInChanged();
+            }
+        });
     }
 
     /**

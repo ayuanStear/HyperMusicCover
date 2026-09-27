@@ -93,7 +93,15 @@ internal class MiniCardMorph(
     private class Piece(val view: View, val native: View?, val text: Boolean, val art: Boolean) {
         val baseTx = view.translationX
         val baseTy = view.translationY
-        val nativeTransitionAlpha = native?.transitionAlpha ?: 1f
+        /**
+         * The card's own opacity, taken the first time this morph writes it rather than when the
+         * piece is built. A morph built while another was still flying over the same card - the two
+         * entries of 2026-09-27 - read a value the other had already driven towards zero, and put
+         * that back as the card's own at the end: the card was left with its title and artist
+         * invisible. Taken at the first write, the value can only be one nobody has written yet.
+         */
+        var nativeTransitionAlpha = 1f
+        var alphaTaken = false
         var paired = false
         /** A line's own colour and words, given back when the morph ends. */
         val ownColor = (view as? TextView)?.currentTextColor ?: 0
@@ -464,6 +472,10 @@ internal class MiniCardMorph(
                 // The card's own line stays hidden until the pill's leaves it: the two faces
                 // differ in weight, and both drawn in full read as a doubled title.
                 if (piece.text) {
+                    if (!piece.alphaTaken) {
+                        piece.nativeTransitionAlpha = n.transitionAlpha
+                        piece.alphaTaken = true
+                    }
                     // Under the pill's line fading off it, the card's is whole well before the
                     // pill's is gone: two equal lines at a and 1 - a composite to 1 - a + a*a,
                     // and the time dipped to three quarters on every crossing (2026-09-26).
@@ -532,7 +544,11 @@ internal class MiniCardMorph(
             v.translationX = piece.baseTx
             v.translationY = piece.baseTy
             v.alpha = 1f
-            if (piece.paired && piece.text) piece.native?.transitionAlpha = piece.nativeTransitionAlpha
+            // Only what this morph itself took: one that never wrote the card's line - it had no
+            // geometry and stopped before its first frame - leaves the OEM's own value there.
+            if (piece.paired && piece.text && piece.alphaTaken) {
+                piece.native?.transitionAlpha = piece.nativeTransitionAlpha
+            }
             (v as? TextView)?.let { tv ->
                 if (tv.currentTextColor != piece.ownColor) tv.setTextColor(piece.ownColor)
                 if (piece.tookText) tv.text = piece.ownText
