@@ -2723,8 +2723,16 @@ public class Main extends XposedModule {
                         ShadeLayer.configure(i.getStringExtra("key"), i.getIntExtra("v", 0));
                         saveState();
                     } else if ("minicfg".equals(op)) {
-                        MiniPlayerRuntime.applyConfig(c, i.getStringExtra("json"));
-                        saveState();
+                        // With a json it is the app's settings page writing; without one it is
+                        // only a read. It used to write the defaults in that case - a probe with
+                        // no extra turned the super island off and saved it (2026-09-27).
+                        String json = i.getStringExtra("json");
+                        if (json == null) {
+                            setResultData(MiniPlayerRuntime.configJson(c));
+                        } else {
+                            MiniPlayerRuntime.applyConfig(c, json);
+                            saveState();
+                        }
                     } else if ("query".equals(op)) {
                         // Answered through the ordered broadcast's result extras: the app is a
                         // separate process and this is the only channel it already has. A reply
