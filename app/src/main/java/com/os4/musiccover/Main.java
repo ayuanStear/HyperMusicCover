@@ -7190,14 +7190,21 @@ public class Main extends XposedModule {
     private static volatile boolean sHideFpPeeked;
 
     /**
-     * Whether the print is hidden by the setting RIGHT NOW - which is the lock screen page, not
-     * everywhere the setting could reach.
+     * Whether the print is hidden by the setting RIGHT NOW - while the device is LOCKED, and not
+     * on the surfaces the same print is drawn on after the unlock.
      *
      * The setting is "hide the lock screen's fingerprint icon", and the views behind it are not
-     * the lock screen's alone: the same icon is what the phone draws over an app that asks for a
-     * fingerprint, and the same frames are what the doze and the always-on display are painted
-     * with. Read as a plain switch, it took the print out of all of them (reported 2026-09-27).
-     * The page is therefore asked for per draw: the keyguard is up and the screen is lit.
+     * the locked profile's alone: the same icon is what the phone draws over an app that asks for
+     * a fingerprint - a payment, an app lock - and that is the one the user wants back ("only on
+     * the lock screen; not during fingerprint payment", 2026-09-27). Read as a plain switch, it
+     * took the print out of those too, because those prompts are the keyguard's own views drawn
+     * while the app is in front.
+     *
+     * So the line is the lock, and nothing else: locked is the lock screen and its always-on
+     * display, where the print is the lock screen's own - and the doze is asked for by leaving the
+     * screen's state out of it, which is how the phone draws it there (the OEM's own icon keeps
+     * the dozing keyguard: `!isKeyguardOccluded() || mDozing` in MiuiGxzwManager) - while anything
+     * after the unlock keeps its icon, payments included.
      *
      * Asked with the process's own Application rather than sAppCtx, because the first frame of a
      * keyguard comes before the module has a context at all - the same reason peekHideFp exists.
@@ -7206,8 +7213,7 @@ public class Main extends XposedModule {
      *
      * The tail past the end is the unlock: the keyguard is dismissed at the start of it, its print
      * fades with the rest of it for a few hundred ms after, and letting go on that frame painted
-     * the ring back over the fade. A screen-off is followed by the doze, whose own print is the
-     * OEM's and comes back with the tail's end.
+     * the ring back over the fade.
      */
     private static final long PRINT_ASK_MS = 100L;
     private static final long PRINT_TAIL_MS = 400L;
@@ -7234,6 +7240,8 @@ public class Main extends XposedModule {
                 locked = km != null && km.isKeyguardLocked();
             } catch (Throwable ignored) {
             }
+            // Read for the log alone: the doze is locked like the lock screen is, and its print is
+            // the lock screen's too.
             try {
                 PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
                 lit = pm != null && pm.isInteractive();
@@ -7241,13 +7249,13 @@ public class Main extends XposedModule {
             }
             // Cached from the last frame while the answer is the same: the ring's frames are
             // 8ms apart and the page cannot change between two of them.
-            sPrintOnPage = locked && lit;
+            sPrintOnPage = locked;
             if (sPrintOnPage) sPrintTailUntil = now + PRINT_TAIL_MS;
             // Only a move of the answer is worth a line: this runs per frame of a ring.
             if (sPrintOnPage != sPrintLogged) {
                 sPrintLogged = sPrintOnPage;
-                Xp.log(TAG + "the print is " + (sPrintOnPage ? "on the lock screen page"
-                        : "somewhere else") + " (locked=" + locked + " lit=" + lit
+                Xp.log(TAG + "the print is " + (sPrintOnPage ? "the locked phone's"
+                        : "an unlocked screen's") + " (locked=" + locked + " lit=" + lit
                         + "), hiding " + (sPrintOnPage || now < sPrintTailUntil));
             }
         }
@@ -7376,9 +7384,9 @@ public class Main extends XposedModule {
      * receiver has no handler of its own, so it is already there.
      *
      * The page's answer rather than the switch's, because this is the one place the alpha is
-     * written after a view exists: the switch is flipped in the app, which is not the lock screen
-     * (hidePrintNow), and a print dimmed here would stay dimmed on every page the icon is drawn
-     * on - the per-draw hooks decide the lock screen for themselves.
+     * written after a view exists: the switch is flipped in the app, which is an unlocked screen
+     * (hidePrintNow), and a print dimmed here would stay dimmed on every screen the icon is drawn
+     * on - the per-draw hooks decide the lock for themselves.
      */
     private static void applyHideFp() {
         adoptFodIcons();
