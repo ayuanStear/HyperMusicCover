@@ -1383,7 +1383,7 @@ public class Main extends XposedModule {
                 peekHideFp();
                 // draw(int resId) is the frame. Any other overload is not ours to touch, which
                 // the argument check below says without having to name the signature.
-                if (sHideFp && args.length == 1 && args[0] instanceof Integer
+                if (hidePrintNow() && args.length == 1 && args[0] instanceof Integer
                         && isFodRing((Integer) args[0])) {
                     // Substituting the drawable rather than skipping the draw: the animation
                     // keeps its own timing and its own lifecycle, it just paints nothing. A
@@ -1407,7 +1407,7 @@ public class Main extends XposedModule {
                     // this is the one chance to dim it before it is ever seen.
                     peekHideFp();
                     sFodIcons.put(v, Boolean.TRUE);
-                    v.setAlpha(sHideFp ? 0f : 1f);
+                    v.setAlpha(hidePrintNow() ? 0f : 1f);
                 } catch (Throwable ignored) {
                     // A view we cannot dim is a visible print, not a broken keyguard.
                 }
@@ -1421,7 +1421,7 @@ public class Main extends XposedModule {
                 try {
                     Xp.hookAll(iconCls, name, chain -> {
                         peekHideFp();
-                        if (sHideFp) return null;
+                        if (hidePrintNow()) return null;
                         return chain.proceed();
                     });
                     break;
@@ -1446,7 +1446,7 @@ public class Main extends XposedModule {
                         peekHideFp();
                         // Painting nothing, rather than dimming: the alpha on this view is the
                         // OEM's to animate, and a frame it never paints cannot be animated back.
-                        if (sHideFp) return null;
+                        if (hidePrintNow()) return null;
                         return chain.proceed();
                     });
                     hooked++;
@@ -7190,6 +7190,85 @@ public class Main extends XposedModule {
     private static volatile boolean sHideFpPeeked;
 
     /**
+     * Whether the print is hidden by the setting RIGHT NOW - which is the lock screen page, not
+     * everywhere the setting could reach.
+     *
+     * The setting is "hide the lock screen's fingerprint icon", and the views behind it are not
+     * the lock screen's alone: the same icon is what the phone draws over an app that asks for a
+     * fingerprint, and the same frames are what the doze and the always-on display are painted
+     * with. Read as a plain switch, it took the print out of all of them (reported 2026-09-27).
+     * The page is therefore asked for per draw: the keyguard is up and the screen is lit.
+     *
+     * Asked with the process's own Application rather than sAppCtx, because the first frame of a
+     * keyguard comes before the module has a context at all - the same reason peekHideFp exists.
+     * A context that cannot be had is not an answer either, and the plain setting stands then,
+     * which is what this did before it had a page to ask about.
+     *
+     * The tail past the end is the unlock: the keyguard is dismissed at the start of it, its print
+     * fades with the rest of it for a few hundred ms after, and letting go on that frame painted
+     * the ring back over the fade. A screen-off is followed by the doze, whose own print is the
+     * OEM's and comes back with the tail's end.
+     */
+    private static final long PRINT_ASK_MS = 100L;
+    private static final long PRINT_TAIL_MS = 400L;
+    private static long sPrintAskAt;
+    private static boolean sPrintOnPage;
+    /** The page the last line was logged for, so the box above logs once per move. */
+    private static boolean sPrintLogged;
+    private static long sPrintTailUntil;
+    /** The process's own Application, for the reads that have to happen before sAppCtx. */
+    private static volatile Context sEarlyCtx;
+
+    private static boolean hidePrintNow() {
+        if (!sHideFp) return false;
+        Context c = sAppCtx != null ? sAppCtx : earlyCtx();
+        if (c == null) return true;
+        long now = android.os.SystemClock.uptimeMillis();
+        // Two binder calls, and the ring asks once per frame while it pulses.
+        if (now - sPrintAskAt >= PRINT_ASK_MS) {
+            sPrintAskAt = now;
+            boolean locked = false, lit = false;
+            try {
+                android.app.KeyguardManager km = (android.app.KeyguardManager)
+                        c.getSystemService(Context.KEYGUARD_SERVICE);
+                locked = km != null && km.isKeyguardLocked();
+            } catch (Throwable ignored) {
+            }
+            try {
+                PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+                lit = pm != null && pm.isInteractive();
+            } catch (Throwable ignored) {
+            }
+            // Cached from the last frame while the answer is the same: the ring's frames are
+            // 8ms apart and the page cannot change between two of them.
+            sPrintOnPage = locked && lit;
+            if (sPrintOnPage) sPrintTailUntil = now + PRINT_TAIL_MS;
+            // Only a move of the answer is worth a line: this runs per frame of a ring.
+            if (sPrintOnPage != sPrintLogged) {
+                sPrintLogged = sPrintOnPage;
+                Xp.log(TAG + "the print is " + (sPrintOnPage ? "on the lock screen page"
+                        : "somewhere else") + " (locked=" + locked + " lit=" + lit
+                        + "), hiding " + (sPrintOnPage || now < sPrintTailUntil));
+            }
+        }
+        return sPrintOnPage || now < sPrintTailUntil;
+    }
+
+    /** The process's Application, before the module has one. See peekHideFp. */
+    private static Context earlyCtx() {
+        Context c = sEarlyCtx;
+        if (c != null) return c;
+        try {
+            // Reflection because ActivityThread is not in the SDK to compile against.
+            c = (Context) Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null);
+        } catch (Throwable ignored) {
+        }
+        if (c != null) sEarlyCtx = c;
+        return c;
+    }
+
+    /**
      * Reads the fingerprint setting out of the state file before loadState() would.
      *
      * The print is not part of the keyguard's own tree. It lives in a window of its own -
@@ -7210,11 +7289,7 @@ public class Main extends XposedModule {
         if (sHideFpPeeked || sAppCtx != null) return;
         sHideFpPeeked = true;
         try {
-            // Reflection because ActivityThread is not in the SDK to compile against. This is
-            // the process's own Application - there is no other context to be had this early,
-            // and the hooks that call this run on SystemUI's main thread, where it is set.
-            Context c = (Context) Class.forName("android.app.ActivityThread")
-                    .getMethod("currentApplication").invoke(null);
+            Context c = earlyCtx();
             if (c == null) {
                 // Nothing to read it with yet; the next draw tries again.
                 sHideFpPeeked = false;
@@ -7299,10 +7374,15 @@ public class Main extends XposedModule {
     /**
      * Applies the current setting to every icon view still alive. Runs on the main thread: the
      * receiver has no handler of its own, so it is already there.
+     *
+     * The page's answer rather than the switch's, because this is the one place the alpha is
+     * written after a view exists: the switch is flipped in the app, which is not the lock screen
+     * (hidePrintNow), and a print dimmed here would stay dimmed on every page the icon is drawn
+     * on - the per-draw hooks decide the lock screen for themselves.
      */
     private static void applyHideFp() {
         adoptFodIcons();
-        float alpha = sHideFp ? 0f : 1f;
+        float alpha = hidePrintNow() ? 0f : 1f;
         java.util.List<View> views;
         synchronized (sFodIcons) {
             views = new java.util.ArrayList<>(sFodIcons.keySet());
