@@ -1100,13 +1100,28 @@ final class CoverPush {
      *
      * Called when the setting changes, and again on every cover entry so a restart is caught
      * before it can be seen.
+     *
+     * The number is its own, and shorter than the one the clock's spring asks for: the picture
+     * is the thing the eye is waiting for when the cover opens, and it used to be handed the
+     * whole of the spring's fade - 387ms at the stock response - so the lock screen sat on the
+     * plain wallpaper for the better part of half a second with the art already on this side of
+     * the wire (measured: written to the wallpaper at +59ms, and it is a crossfade, not a
+     * movement that has to land with the clock). Half of it, floored at 150ms, is the same fade
+     * the video cover runs and about as long as this reads as a swap rather than a dissolve
+     * (asked for 2026-09-27).
      */
+    private static long wallpaperFadeMs() {
+        long clockFade = Main.fadeMsFor(Main.sClockResponse);
+        return Math.max(150L, Math.round(clockFade * 0.5f));
+    }
+
     static void pushFadeMs(Context ctx) {
         if (ctx == null) return;
-        ctx.sendBroadcast(wallpaperIntent("fadems")
-                .putExtra("v", (int) Main.fadeMsFor(Main.sClockResponse)));
-        Xp.log(Main.TAG + "wallpaper fade = " + Main.fadeMsFor(Main.sClockResponse) + "ms for response "
-                + Main.sClockResponse);
+        long fade = wallpaperFadeMs();
+        ctx.sendBroadcast(wallpaperIntent("fadems").putExtra("v", (int) fade));
+        Xp.log(Main.TAG + "wallpaper fade = " + fade + "ms for response "
+                + Main.sClockResponse + " (clock's own is "
+                + Main.fadeMsFor(Main.sClockResponse) + "ms)");
     }
 
     /** Asks the wallpaper process to re-upload the art it already has on disk. */
