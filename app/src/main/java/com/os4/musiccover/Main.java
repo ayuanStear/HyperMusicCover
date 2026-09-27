@@ -2149,6 +2149,10 @@ public class Main extends XposedModule {
         }
         // Always follow the card, whatever the file said.
         setAuto(true);
+        // The file is read long after the plugin built its island, so a length restored from it
+        // would otherwise sit there until the next scene change. Re-measured here, and only when
+        // there is one to apply.
+        if (sIslandLenPx > 0) IslandLength.changed();
     }
 
     private static synchronized void registerReceiver(Context ctx) {
@@ -2625,6 +2629,12 @@ public class Main extends XposedModule {
                                 + " sink=" + sFpSinkPx + "px"
                                 + " (applies on the next recompute)");
                     } else if ("islandlen".equals(op)) {
+                        // Without a px this is a read, the way minicfg's bare form is: what the
+                        // hook has done, rather than a length for it to draw.
+                        if (!i.hasExtra("px")) {
+                            setResultData(IslandLength.describe());
+                            return;
+                        }
                         // The super island's length. Absent means 0, which is "the system's own
                         // answer" rather than a length, so the switch-off case and a restore of a
                         // file that never had this key both land on the stock island.

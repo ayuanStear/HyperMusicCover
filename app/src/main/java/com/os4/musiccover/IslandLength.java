@@ -66,12 +66,32 @@ final class IslandLength {
      */
     private static final List<WeakReference<Object>> sContents = new CopyOnWriteArrayList<>();
 
+    /** The last length this hook actually drew, so the log says when it changes and nothing more. */
+    private static volatile int sLoggedWidth;
+    /** How many times the helper has been asked for a size, and how many were answered with one. */
+    private static volatile int sCalls, sApplied;
+    /** The last correction, as `was -> now`, for `op islandlen`'s bare form to read back. */
+    private static volatile String sLast = "none";
+
     static boolean installed() {
         return sInstalled;
     }
 
     static String why() {
         return sWhy;
+    }
+
+    /** What `op islandlen` answers with when it carries no px: the hook's own state, to read. */
+    static String describe() {
+        return "installed=" + sInstalled
+                + " contents=" + sContents.size()
+                + " calls=" + sCalls
+                + " applied=" + sApplied
+                + " last=" + sLast
+                + " length=" + Main.islandLengthPx()
+                + " min=" + Main.islandMinPx()
+                + " system=" + Main.islandSystemPx()
+                + " why=" + sWhy;
     }
 
     /**
@@ -116,6 +136,7 @@ final class IslandLength {
                                 : chain.getArgs().get(0), chain.proceed()));
             }
             sInstalled = true;
+            sWhy = "hooked";
             Xp.log(TAG + "super island length hooked");
         } catch (Throwable t) {
             sWhy = String.valueOf(t);
@@ -131,6 +152,7 @@ final class IslandLength {
     private static Object apply(Object helper, Object params, Object result) {
         int want = Main.islandLengthPx();
         if (params == null || result == null || sResultCtor == null) return result;
+        sCalls++;
         try {
             int screen = ((Number) Xp.callMethod(params, "getScreenWidth")).intValue();
             int cutout = ((Number) Xp.callMethod(params, "getCutoutWidth")).intValue();
@@ -145,6 +167,13 @@ final class IslandLength {
             }
             int width = Math.max(Math.max(min, 1), Math.min(want, screen));
             if (width == was) return result;
+            sApplied++;
+            sLast = was + " -> " + width;
+            if (width != sLoggedWidth) {
+                sLoggedWidth = width;
+                Xp.log(TAG + "super island " + was + " -> " + width + "px (cutout "
+                        + cutout + ", screen " + screen + ", min " + min + ")");
+            }
             int side = Math.max(0, (width - cutout) / 2);
             // The small-island arrangement is left as the system computed it: there the island
             // shares the row with a second island, and its width is what keeps the two apart.
