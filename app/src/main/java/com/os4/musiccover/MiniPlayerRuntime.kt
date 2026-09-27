@@ -6716,18 +6716,6 @@ private class MiniPlayerController(
         return row ?: left.parent as? View
     }
 
-    init {
-        host.clipChildren = false
-        host.clipToPadding = false
-        prefs.registerOnSharedPreferenceChangeListener(prefListener)
-        host.viewTreeObserver.addOnPreDrawListener(preDraw)
-        left.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
-        right.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
-        runCatching { sessions?.addOnActiveSessionsChangedListener(sessionListener, null, handler) }
-        LockIslands.addListener(islandListener)
-        refresh()
-    }
-
     fun destroy() {
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         runCatching { host.viewTreeObserver.removeOnPreDrawListener(preDraw) }
@@ -7228,7 +7216,14 @@ private class MiniPlayerController(
 
     fun refresh() {
         if (Looper.myLooper() != Looper.getMainLooper()) { scheduleRefresh(); return }
-        runCatching { refreshUnsafe() }.onFailure { Xp.log("MCMini: refresh failed: $it") }
+        // Where it failed as well as what: a caught failure here is a swallowed one, and the
+        // message alone ("...on a null object reference") says nothing about which piece was not
+        // ready yet. File and line rather than class name, because this module's own release build
+        // is minified and every frame would otherwise read as one or two letters.
+        runCatching { refreshUnsafe() }.onFailure { Xp.log("MCMini: refresh failed: $it at "
+                + it.stackTrace.take(10).joinToString(" <- ") { f ->
+                    (f.fileName ?: "?") + ":" + f.lineNumber + "." + f.methodName
+                }) }
     }
 
     private fun scheduleRefresh() {
@@ -8339,6 +8334,34 @@ private class MiniPlayerController(
     private fun dp(value: Float) = (value * context.resources.displayMetrics.density + .5f).toInt()
 
     private fun Float.approximatelyEquals(other: Float): Boolean = abs(this - other) <= 0.01f
+
+    /**
+     * The last thing in the class body on purpose: the first refresh is one of its steps.
+     *
+     * Kotlin initializes properties and init blocks in the order they are written, and `refresh()`
+     * does not only read what is registered here - it binds the pill, and binding reaches the
+     * controller's own tables (`focusLotties`, `liveArts`, `rollers`, `timerViews`), which are
+     * declared further down this class. Written in the middle, the first refresh of every controller
+     * ran while those were still null: the bind threw on the first one it touched, `refresh()`'s
+     * own runCatching swallowed it, and the pill sat unbound until something asked for the next
+     * refresh. That was the "MCMini: refresh failed: ... WeakHashMap.remove ... on a null object
+     * reference" in the log at every SystemUI start - once per controller, on the one refresh that
+     * happens during construction.
+     *
+     * The registrations themselves are order-independent: none of the properties below this point
+     * reads them, and the listeners cannot fire before the constructor returns.
+     */
+    init {
+        host.clipChildren = false
+        host.clipToPadding = false
+        prefs.registerOnSharedPreferenceChangeListener(prefListener)
+        host.viewTreeObserver.addOnPreDrawListener(preDraw)
+        left.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+        right.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> schedulePosition() }
+        runCatching { sessions?.addOnActiveSessionsChangedListener(sessionListener, null, handler) }
+        LockIslands.addListener(islandListener)
+        refresh()
+    }
 }
 
 /** The small island's nudge home: MiniPlayerView's OFFSET_RESPONSE, CoverMorphMotion's damping. */
