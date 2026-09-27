@@ -6565,6 +6565,58 @@ public class Main extends XposedModule {
         }
     }
 
+    /**
+     * Whether the system's own media card - the BIG card - is what the lock screen is showing.
+     *
+     * The card's data being up is one half; the other is the super island not standing in its
+     * place. That distinction is the whole of the rule the cover follows now: the song's
+     * background belongs to the big card (asked for 2026-09-27), so the island taking the card's
+     * place is the one thing besides the music ending that takes the cover away.
+     */
+    private static boolean bigCardShown() {
+        return Boolean.TRUE.equals(coverWantedByCard());
+    }
+
+    /**
+     * What the card answers about the cover, as three states rather than two.
+     *
+     * TRUE - the big card is on the lock screen and the cover belongs with it. FALSE - the super
+     * island has taken its place (or there is no music card at all), so the cover does not belong.
+     * null - this is not the lock screen's moment (unlocked, the shade in front, a transition):
+     * nothing is decided, and whatever the cover was doing it carries on doing.
+     *
+     * The middle answer is the one that matters: without it, unlocking would read as "the island
+     * is not standing in for the card" and push the cover while the phone is being used.
+     */
+    private static Boolean coverWantedByCard() {
+        if (!sCardShowing) return Boolean.FALSE;
+        if (!keyguardShowing()) return null;
+        try {
+            return MiniPlayerRuntime.standsInForCard() ? Boolean.FALSE : Boolean.TRUE;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * The super island has taken the system card's place, or given it back.
+     *
+     * Called from MiniPlayerRuntime the moment that changes - which is at the START of the morph
+     * between the two, not at its end, so the clock, the wallpaper and the artwork set out with the
+     * card's own motion. The exit is the ordinary scene exit and the entry the ordinary scene
+     * entry, so both directions keep their animations; nothing here is a snap.
+     */
+    static void onMiniStandInChanged() {
+        if (!sAuto) return;
+        Boolean want = coverWantedByCard();
+        if (want == null) return;
+        if (!want) {
+            if (sCoverMode) exitFromTap("the super island stands in for the card");
+        } else if (!sCoverMode) {
+            enterFromTap("the big card is showing again");
+        }
+    }
+
     /** The wake reached the clock before the SCREEN_ON broadcast did. */
     static void noteAwake() {
         if (sScreenOn) return;
@@ -9910,6 +9962,20 @@ public class Main extends XposedModule {
     private static void onMediaUpdate() {
         MiniPlayerRuntime.refresh();
         if (!sAuto || !sCardShowing) return;
+        // The cover follows the big card, and only it (see coverWantedByCard): the state where the
+        // card is up and the cover is not is exactly what the island standing in leaves behind, and
+        // a media event is the moment to re-decide it. This is also the repair path for a cover
+        // that was switched off by a tap in an older build - a tap is no longer what brings it back
+        // (asked for 2026-09-27).
+        Boolean want = coverWantedByCard();
+        if (want == Boolean.FALSE && sCoverMode) {
+            exitFromTap("the super island stands in for the card");
+            return;
+        }
+        if (want == Boolean.TRUE && sTapSuppressed) {
+            enterFromTap("the big card is showing");
+            return;
+        }
         // The user tapped the cover away and the card is still up. The one case where "there is
         // a card" must not mean "put the cover back" - so nothing below this point runs, because
         // everything below it ends in a push or in setCoverEnabled(true).
@@ -10496,11 +10562,11 @@ public class Main extends XposedModule {
             bottom = sCardT > sScreenH / 3 ? sCardT : sScreenH * 0.62f;
         }
         if (y < top || y > bottom) return;
-        if (sCoverMode) {
-            exitFromTap("tap at y=" + y);
-        } else if (sTapSuppressed) {
-            enterFromTap("tap at y=" + y);
-        }
+        // Only the way IN, and only while the big card is the thing showing. The tap used to be
+        // the switch both ways; the cover now belongs to the big card (2026-09-27), so tapping the
+        // wallpaper must not be able to take it away - and with the island standing in for the card
+        // there is nothing here to turn on either.
+        if (!sCoverMode && bigCardShown()) enterFromTap("tap at y=" + y);
     }
 
     static boolean screenOn() {

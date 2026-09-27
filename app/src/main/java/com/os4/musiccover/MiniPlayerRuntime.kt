@@ -729,6 +729,28 @@ object MiniPlayerRuntime {
         synchronized(controllers) { controllers.values.any { it.controller.wantsNativeArtworkGesture() } }
 
     /**
+     * Whether the super island is standing in for the system's media card right now.
+     *
+     * The one question Main asks about the pill for the cover: the song's background belongs to the
+     * BIG card, so while the card is up in the data sense but suppressed for the island, the cover
+     * goes (2026-09-27). Read off the suppression itself rather than off the presentation the
+     * policy would choose, because that is also what is true in the full-screen AOD - where the
+     * OEM card is put back and the island is only standing by.
+     */
+    @JvmStatic fun standsInForCard(): Boolean =
+        synchronized(controllers) { controllers.values.any { it.controller.standsInForCard() } }
+
+    /** The last answer standsInForCard() gave, so Main hears about it only when it moves. */
+    private var lastStandIn = false
+
+    internal fun noteStandInChanged() {
+        val now = standsInForCard()
+        if (now == lastStandIn) return
+        lastStandIn = now
+        Main.onMiniStandInChanged()
+    }
+
+    /**
      * The card can be swiped down into the pill: when it is up by choice,
      * and in the cover or lyrics - where the card stands in for the pill - whenever the pill
      * is what the lock screen goes back to.
@@ -7136,6 +7158,12 @@ private class MiniPlayerController(
             // card's last stretch. The scene's own entry finds this morph running and takes it
             // over (beginTransition), and its artwork leaves from where the pill's is drawn.
             Main.miniPlayerEnterCover()
+        } else if (toNative && !Main.coverModeOn()) {
+            // The same hand-over for a lift that was not going back into a remembered scene: the
+            // big card is what the cover belongs to, so landing on it brings the song's background
+            // back - with the transition the scene entry already knows how to make, not a snap
+            // (asked for 2026-09-27). Already in the cover, there is nothing to bring back.
+            Main.miniPlayerEnterCover()
         }
     }
 
@@ -8199,7 +8227,13 @@ private class MiniPlayerController(
         nativeSuppressionRequested = suppress
         if (suppress) updateHeader()
         else if (wasRequested || suppressedHeaders.hasOverrides) restoreHeader()
+        // Main's cover follows this: the song's background belongs to the BIG card, so the pill
+        // taking the card's place is the one thing that takes it away. Told only when it moves.
+        if (wasRequested != suppress) MiniPlayerRuntime.noteStandInChanged()
     }
+
+    /** Whether the pill is standing in for the OEM card right now. See the object's accessor. */
+    fun standsInForCard(): Boolean = nativeSuppressionRequested
 
     private fun ensureNativeHeaderVisible() {
         val current = transitionHeader() ?: return
