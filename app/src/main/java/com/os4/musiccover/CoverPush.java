@@ -1176,8 +1176,12 @@ final class CoverPush {
         });
     }
 
-    /** What the wallpaper currently shows, coarsely, so a stale source can be recognised. */
-    private static volatile int sArtPrint;
+    /**
+     * What the wallpaper currently shows, coarsely, so a stale source can be recognised. Read by
+     * Main as well: the cover the user has tapped away gets its card art checked against the same
+     * fingerprint, without the push that would have set it.
+     */
+    static volatile int sArtPrint;
     /**
      * The size of that push, and the track it belonged to, so a WORSE source for the same track
      * can be refused.

@@ -7142,6 +7142,8 @@ public class Main extends XposedModule {
 
     private static final int CARD_RETRIES = 12;
     private static final long CARD_RETRY_MS = 250L;
+    /** How many times the artwork write waits for a card that is still being inflated. */
+    private static final int CARD_ART_RETRIES = 4;
     /** How long the card has to hold still before its position is believed. */
     private static final long CARD_SETTLE_MS = 400L;
 
@@ -8668,6 +8670,25 @@ public class Main extends XposedModule {
      * would tear the wallpaper down and put it straight back.
      */
     /**
+     * Whether the module is the one looking after the lock screen card right now.
+     *
+     * Cover mode is the obvious half. The other is the cover the user has tapped away: the
+     * wallpaper goes back, but the card stays the module's - the thumbnail's tap listener is
+     * still ours, a second tap brings the cover back, and it is the same card all along. Leaving
+     * that state out of the rule below is what made a track change with the cover tapped away
+     * leave the card on the old thumbnail: cover mode is off, so the whole compensation was off
+     * with it, and MIUI's own pipeline for Soda Music is tens of seconds behind. The card only
+     * moved when something made MIUI rebind - a pause did, a track change did not.
+     *
+     * sTapSuppressed lasts as long as the music does and is cleared by a second tap, by the end
+     * of the music and by a cover coming back, which is exactly the span over which the card is
+     * still ours to keep in step.
+     */
+    private static boolean cardOurs() {
+        return sCoverMode || sTapSuppressed;
+    }
+
+    /**
      * Rewrites the card's incoming data with what the session is actually playing, before MIUI
      * stores or binds it.
      *
@@ -8682,16 +8703,16 @@ public class Main extends XposedModule {
      * off this same object, stops flip-flopping between the session's track and the card's
      * stale one.
      *
-     * Deliberately narrow. It only speaks when cover mode is on, for the package the watched
-     * session belongs to, and only when the session and sTrackKey agree: without that last
-     * check a lagging session could drag a card MIUI had already caught up back to the old
-     * song. Nothing is written when the publish is already fresh, so a caught-up card costs
-     * one string compare per publish. Anything that throws - a field renamed in a HyperOS
+     * Deliberately narrow. It only speaks while the card is the module's (see cardOurs), for the
+     * package the watched session belongs to, and only when the session and sTrackKey agree:
+     * without that last check a lagging session could drag a card MIUI had already caught up back
+     * to the old song. Nothing is written when the publish is already fresh, so a caught-up card
+     * costs the artwork compare at most. Anything that throws - a field renamed in a HyperOS
      * update, a field that refuses writes - is caught once here and leaves the card exactly
      * as MIUI made it.
      */
     private static void freshenMediaData(Object mediaData) {
-        if (mediaData == null || !sCoverMode || sTrackKey.isEmpty()) return;
+        if (mediaData == null || !cardOurs() || sTrackKey.isEmpty()) return;
         MediaController w = sWatched;
         if (w == null) return;
         try {
@@ -8788,7 +8809,7 @@ public class Main extends XposedModule {
      */
     private static void refreshCardText() {
         MediaController w = sWatched;
-        if (w == null || !sCoverMode || !sameTrack(trackKey(w), sTrackKey)) return;
+        if (w == null || !cardOurs() || !sameTrack(trackKey(w), sTrackKey)) return;
         MediaMetadata m = w.getMetadata();
         if (m == null) return;
         String title = m.getString(MediaMetadata.METADATA_KEY_TITLE);
@@ -8812,6 +8833,40 @@ public class Main extends XposedModule {
     }
 
     /**
+     * The card's thumbnail alone, for the cover the user has tapped away.
+     *
+     * With the cover dismissed nothing is pushed - the wallpaper is meant to stay the system's -
+     * so the push pipeline's own hand-over never runs, and the only other thing that would put
+     * the settled track's artwork on the card is MIUI's rebind, which carries MIUI's own copy.
+     * This is the same authority the text gets at the same moment, and the same guard the push
+     * uses: an artwork identical to the one already up means the player has not filled its own
+     * bitmap in yet and is skipped rather than written, with MIUI's rebind left to bring it when
+     * it does arrive.
+     */
+    private static void refreshCardArtForSettledTrack() {
+        try {
+            MediaController w = sWatched;
+            if (sCoverMode || w == null) return;
+            MediaMetadata m = w.getMetadata();
+            if (m == null) return;
+            Bitmap art = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+            if (art == null) art = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
+            if (art == null && m.getDescription() != null) art = m.getDescription().getIconBitmap();
+            if (art == null) return;
+            int print = CoverPush.artPrint(art);
+            if (print != 0 && print == CoverPush.sArtPrint) {
+                Xp.log(TAG + "card art still the one already up, left to MIUI's rebind");
+                return;
+            }
+            Xp.log(TAG + "card art <- session, cover tapped away "
+                    + art.getWidth() + "x" + art.getHeight());
+            refreshCardArt(art);
+        } catch (Throwable t) {
+            Xp.log(TAG + "card art for the settled track failed: " + t);
+        }
+    }
+
+    /**
      * Hands the cover the wallpaper just took to the card's own artwork view.
      *
      * The card's thumbnail is MIUI's too, and it lags exactly as the text does. Called from the
@@ -8821,6 +8876,19 @@ public class Main extends XposedModule {
      * processed one.
      */
     static void refreshCardArt(final Bitmap art) {
+        refreshCardArt(art, 0);
+    }
+
+    /**
+     * [attempt] counts the retries taken because there was no album_art_image to write to.
+     *
+     * The card is rebuilt around a track change, and a cover that comes up on the same frame can
+     * reach here before the new card is in the tree - measured once as "no album_art_image on
+     * screen" with the artwork already pushed. MIUI's own rebind covers that on its own, but the
+     * tapped-away cover has no push behind it and this is the only write, so the gap is worth
+     * waiting out rather than dropping.
+     */
+    private static void refreshCardArt(final Bitmap art, final int attempt) {
         if (art == null) return;
         main().post(new Runnable() {
             @Override
@@ -8835,7 +8903,16 @@ public class Main extends XposedModule {
                         return;
                     }
                     if (writeArt(anchor.getRootView(), id, art) == 0) {
-                        Xp.log(TAG + "card art refresh: no album_art_image on screen");
+                        if (attempt < CARD_ART_RETRIES) {
+                            main().postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    refreshCardArt(art, attempt + 1);
+                                }
+                            }, CARD_RETRY_MS);
+                        } else {
+                            Xp.log(TAG + "card art refresh: no album_art_image on screen");
+                        }
                     }
                 } catch (Throwable t) {
                     Xp.log(TAG + "card art refresh failed: " + t);
@@ -9393,8 +9470,23 @@ public class Main extends XposedModule {
         MiniPlayerRuntime.refresh();
         if (!sAuto || !sCardShowing) return;
         // The user tapped the cover away and the card is still up. The one case where "there is
-        // a card" must not mean "put the cover back".
-        if (sTapSuppressed) return;
+        // a card" must not mean "put the cover back" - so nothing below this point runs, because
+        // everything below it ends in a push or in setCoverEnabled(true).
+        //
+        // The card, though, is still the module's (see cardOurs), and a track change has to be
+        // followed far enough for it: the settled key moves and the card's own text is told. Left
+        // out, sTrackKey stayed on the track the cover was tapped away on, the artwork stamp's
+        // same-track guard could never pass, and the card sat on the old song and thumbnail until
+        // something else made MIUI rebind - a pause did, a track change did not.
+        if (sTapSuppressed) {
+            String sessionKey = trackKey(sWatched);
+            if (sessionKey.isEmpty() || sameTrack(sessionKey, sTrackKey)) return;
+            sTrackKey = sessionKey;
+            Xp.log(TAG + "card track, cover tapped away: " + sessionKey);
+            refreshCardText();
+            refreshCardArtForSettledTrack();
+            return;
+        }
         String key = sCardKey.isEmpty() ? trackKey(sWatched) : sCardKey;
         // One track, several keys. The string itself changes under a track that has not: the
         // card's own key is pkg|song|artist and the session fallback appends the album, so the
