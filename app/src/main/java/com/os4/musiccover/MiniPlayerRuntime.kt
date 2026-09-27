@@ -1471,6 +1471,10 @@ private class MiniPlayerController(
     private var cachedCover: Bitmap? = null
     private var refreshPosted = false
     private var positionPosted = false
+    /** Passes spent waiting for the shortcut buttons to be laid out before the pill is placed. */
+    private var restWaits = 0
+    private var restWaitSince = 0L
+    private var restWaitPosted = false
     private var configuredHeightDp = 72f
     private var config = JSONObject(MiniPlayerConfig.defaultJson())
     private var forceHeaderRefresh = true
@@ -6716,6 +6720,23 @@ private class MiniPlayerController(
         return row ?: left.parent as? View
     }
 
+    /**
+     * The centre of the row the torch and camera buttons live in, or null when that is not laid
+     * out either.
+     *
+     * The fallback for a placement asked for before the buttons have a size: the buttons sit inside
+     * this row, so its centre is where they are about to be - as opposed to the middle of the
+     * screen, which is where having no answer at all used to put the pill.
+     */
+    private fun shortcutRowCentre(): FloatArray? {
+        if (shortcutRow?.get()?.isAttachedToWindow != true) {
+            findRow()?.let { shortcutRow = WeakReference(it) }
+        }
+        val row = shortcutRow?.get() ?: return null
+        if (row.width <= 0 || row.height <= 0) return null
+        return restCentre(row)
+    }
+
     fun destroy() {
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         runCatching { host.viewTreeObserver.removeOnPreDrawListener(preDraw) }
@@ -8222,6 +8243,15 @@ private class MiniPlayerController(
         host.postOnAnimation { positionPosted = false; position() }
     }
 
+    /**
+     * How long position() waits for the shortcut buttons - then for the row they live in - before
+     * it places the pill on a guess. Twelve passes of 100ms covers the gap between a SystemUI
+     * start and the keyguard's shortcut row being measured; past it the old guess stands, so a
+     * phone whose buttons never lay out is exactly where it was before.
+     */
+    private val REST_WAITS = 12
+    private val REST_WAIT_MS = 100L
+
     /** The pill at rest: its size, and the centre of the row it is laid out in. */
     private class PillRest(val width: Int, val height: Int, val centerX: Float, val centerY: Float)
 
@@ -8229,17 +8259,29 @@ private class MiniPlayerController(
      * Where the pill rests with a small island beside it ([small]) or alone - the row's own
      * layout (position), asked for another row than the one showing: an island landing in the
      * pill is laid out for the row it lands in (fitToPill).
+     *
+     * [allowGuess] is what to do while the torch and camera buttons - the two things the pill
+     * sits between - have not been laid out. Their place IS the pill's place, so the honest answer
+     * then is "not yet", which is what position() asks for a few times before allowing the guess:
+     * the first placement after a SystemUI start lands in exactly that gap, and a guess put the
+     * pill in the MIDDLE of the screen and left it there (2026-09-27, reported after a reboot).
      */
-    private fun pillRest(small: Boolean): PillRest? {
+    private fun pillRest(small: Boolean, allowGuess: Boolean = true): PillRest? {
         if (host.width <= 0 || host.height <= 0) return null
         // Where the buttons are laid out, not where they are drawn: whatever moves them on top
         // of their layout (the swipe, the doze) reaches the pill through followShortcuts.
         // Taking their drawn place here as well moved the pill twice as far as they went.
         val laidOut = left.width > 0 && right.width > 0 && left.height > 0 && right.height > 0
+        if (!laidOut && !allowGuess) return null
         val l = if (laidOut) restCentre(left) else null
         val r = if (laidOut) restCentre(right) else null
+        // The buttons are inside the shortcut row, so its centre is where they are about to be -
+        // a much better guess than the middle of the screen, and the one that covers a pill placed
+        // before they have a size.
+        val row = if (laidOut) null else shortcutRowCentre()
         val centerX = if (l != null && r != null) (l[0] + r[0]) / 2f else host.width / 2f
-        val centerY = if (l != null && r != null) (l[1] + r[1]) / 2f else host.height / 2f
+        val centerY = if (l != null && r != null) (l[1] + r[1]) / 2f
+            else row?.get(1) ?: (host.height / 2f)
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
         val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
@@ -8266,7 +8308,30 @@ private class MiniPlayerController(
         val view = player ?: return
         if (view.visibility != View.VISIBLE) return
         val small = smallKey != null
-        val rest = pillRest(small) ?: return
+        val rest = pillRest(small, restWaits >= REST_WAITS) ?: run {
+            // Neither the buttons nor the row they live in is laid out yet - a SystemUI that has
+            // just started, with the pill bound on a track change before the keyguard's shortcut
+            // row has been measured. Ask again instead of placing the pill somewhere it is not:
+            // REST_WAITS passes of this is what keeps it out of the middle of the screen.
+            restWaits++
+            if (restWaitSince == 0L) restWaitSince = android.os.SystemClock.uptimeMillis()
+            if (!restWaitPosted) {
+                restWaitPosted = true
+                handler.postDelayed({
+                    restWaitPosted = false
+                    position()
+                }, REST_WAIT_MS)
+            }
+            return
+        }
+        if (restWaits > 0) {
+            val waited = android.os.SystemClock.uptimeMillis() - restWaitSince
+            val from = if (left.width > 0 && right.width > 0) "buttons" else "row"
+            Xp.log("MCMini: pill placed after waiting ${waited}ms for the shortcut row" +
+                    " (${from}), ${restWaits} passes")
+            restWaits = 0
+            restWaitSince = 0L
+        }
         val pillWidth = rest.width
         val height = rest.height
         val centerY = rest.centerY
