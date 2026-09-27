@@ -7900,7 +7900,14 @@ public class Main extends XposedModule {
                 // is read at UP rather than at DOWN: a cover that came up under the finger
                 // during the gesture (the OEM can re-lay the card out at any point) would
                 // otherwise send the tap the wrong way.
-                if (sCoverMode) exitFromTap("artwork tapped");
+                //
+                // It is only the way IN now. The big card keeps the song's cover as the lock
+                // screen's background for as long as it is up (asked for 2026-09-27), so a tap
+                // on its artwork must not take that background away - it is knowingly inert
+                // there. The way back to the user's own wallpaper is folding the card into the
+                // pill, which is a scene change of its own (miniPlayerTurnScene), or turning
+                // cover mode off from the app.
+                if (sCoverMode) Xp.log(TAG + "artwork tapped: the cover stays (the big card keeps it)");
                 else if (MiniPlayerRuntime.wantsNativeArtworkGesture()) miniPlayerEnterCover();
                 else enterFromTap("artwork tapped");
             }
