@@ -9018,19 +9018,33 @@ public class Main extends XposedModule {
         // second lock and every lock after it. Same track means same package and same title - the
         // two fields all three shapes agree on - and then there is nothing for the cover to do.
         if (sCoverMode && (key.equals(sTrackKey) || sameTrack(key, sTrackKey))) {
-            // The lyric is not so sure. A provider module cannot write its lyric until the
-            // player has told it what is playing, so the payload lands on a session this has
-            // already settled as the same track - and this return was the only thing between it
-            // and the re-read that would pick it up. LockLyrics.onTrack was reachable from here
-            // and nowhere else, so with the cover on, a module that was a second late lost the
-            // song to whatever the network had found in the meantime, for the whole song.
-            //
-            // Its same-track path costs a getPlaybackState and a metadata read, and does nothing
-            // at all unless the session is carrying a payload that song has not been read
-            // against - each payload once, three per track. Cheap enough to reach from a path
-            // that a title-in-the-metadata player runs on every sung line.
-            LockLyrics.onTrack(key, sWatched);
-            return;
+            // The card can stand still on a track the session has already left. A player that
+            // rewrites its media notification long after the session moved on - Soda Music
+            // measured at 30s and more with the screen off - keeps the card key naming the old
+            // song through skip after skip, and this early return was what kept the cover on the
+            // previous album until the card caught up, or the next lock rebuilt it. Between the
+            // two witnesses the session is the fresh one: its metadata is what the player edits
+            // first. So when the card says "same track" but the session names a different one,
+            // believe the session and fall through with its key - albumArt() reads the session
+            // first, so the art is as up to date as the trigger, and the retry budget below
+            // still covers a player that fills its own bitmap in late.
+            String sessionKey = trackKey(sWatched);
+            if (sessionKey.isEmpty() || sameTrack(sessionKey, sTrackKey)) {
+                // The lyric is not so sure. A provider module cannot write its lyric until the
+                // player has told it what is playing, so the payload lands on a session this has
+                // already settled as the same track - and this return was the only thing between it
+                // and the re-read that would pick it up. LockLyrics.onTrack was reachable from here
+                // and nowhere else, so with the cover on, a module that was a second late lost the
+                // song to whatever the network had found in the meantime, for the whole song.
+                //
+                // Its same-track path costs a getPlaybackState and a metadata read, and does nothing
+                // at all unless the session is carrying a payload that song has not been read
+                // against - each payload once, three per track. Cheap enough to reach from a path
+                // that a title-in-the-metadata player runs on every sung line.
+                LockLyrics.onTrack(key, sWatched);
+                return;
+            }
+            key = sessionKey;
         }
         sTrackKey = key;
         long ctNow = android.os.SystemClock.uptimeMillis();
