@@ -668,6 +668,13 @@ public class Main extends XposedModule {
      */
     private static final java.util.Map<View, Boolean> sFodIcons =
             java.util.Collections.synchronizedMap(new java.util.WeakHashMap<View, Boolean>());
+
+    /**
+     * The alpha each of those views had before this module dimmed it, so the unlock can hand the
+     * view its OWN value back. See dimFodIcon: the dim is not a state this module owns.
+     */
+    private static final java.util.Map<View, Float> sFodWas =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<View, Float>());
     /** resId -> is this one of the ring's frames, so the name lookup happens once per drawable. */
     private static final java.util.concurrent.ConcurrentHashMap<Integer, Boolean> sFodRing =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -1406,8 +1413,11 @@ public class Main extends XposedModule {
                     // Built before the keyguard attaches on the same builds the ring is, and
                     // this is the one chance to dim it before it is ever seen.
                     peekHideFp();
+                    // The answer first: on the first keyguard of a SystemUI start this is what
+                    // decides whether the view about to be dimmed is the locked phone's to dim.
+                    hidePrintNow();
                     sFodIcons.put(v, Boolean.TRUE);
-                    v.setAlpha(hidePrintNow() ? 0f : 1f);
+                    dimFodIcon(v);
                 } catch (Throwable ignored) {
                     // A view we cannot dim is a visible print, not a broken keyguard.
                 }
@@ -2620,6 +2630,12 @@ public class Main extends XposedModule {
                         // Over the probe rather than the log because the module's INFO lines are
                         // not readable on this device - LSPosed keeps error level only.
                         setResultData(HyperTweaks.describe());
+                    } else if ("fod".equals(op)) {
+                        // The print's own views and where their alpha stands: which of them this
+                        // module is holding down, and what it will hand back. The question an
+                        // "unlocked and there is still no fingerprint icon" turns on - a view
+                        // dimmed for the lock screen that never got its own value back.
+                        setResultData(describeFod());
                     } else if ("colon".equals(op)) {
                         HyperTweaks.sForceColon = i.getBooleanExtra("on",
                                 !HyperTweaks.sForceColon);
@@ -2649,7 +2665,7 @@ public class Main extends XposedModule {
                         sHideFp = i.getBooleanExtra("on", !sHideFp);
                         saveState();
                         Xp.log(TAG + "hide fingerprint " + (sHideFp ? "on" : "off"));
-                        applyHideFp();
+                        refreshHideFp();
                     } else if ("aodclock".equals(op)) {
                         sAodSmall = i.getBooleanExtra("small", !sAodSmall);
                         saveState();
@@ -3029,8 +3045,9 @@ public class Main extends XposedModule {
         // nothing in it otherwise.
         HyperTweaks.publishColon(ctx);
         // The icon views can already exist by now - the file is read when the keyguard attaches,
-        // which is not necessarily before the fingerprint view is built.
-        applyHideFp();
+        // which is not necessarily before the fingerprint view is built - and the phone is locked
+        // while this runs, so the dim it applies is the one the unlock has to undo (see dimFodIcon).
+        refreshHideFp();
 
         // Which kind of wallpaper is on the lock screen decides where the cover is drawn, and
         // cover mode can be restored from disk before any push has had a chance to work it
@@ -3062,6 +3079,11 @@ public class Main extends XposedModule {
                 // Every one of these three changes the answer to one of the two cached readings,
                 // so the timer below is not what anyone waits on at the moments that matter.
                 forgetSysReads();
+                // The print's answer is one of the things that moves here - the phone locks on
+                // SCREEN_OFF and is unlocked by USER_PRESENT - and it moves the alphas with it.
+                // Asked now rather than at the next draw of a print view, so the prompt the unlock
+                // is followed by is drawn with the alpha the unlock gave back.
+                refreshHideFp();
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
                     sScreenOn = true;
                     sAodGrey = Float.NaN;
@@ -7257,6 +7279,10 @@ public class Main extends XposedModule {
                 Xp.log(TAG + "the print is " + (sPrintOnPage ? "the locked phone's"
                         : "an unlocked screen's") + " (locked=" + locked + " lit=" + lit
                         + "), hiding " + (sPrintOnPage || now < sPrintTailUntil));
+                // And the alphas follow the move, here rather than on the caller's frames: the
+                // unlock has to hand the animation view its own alpha back before the app's
+                // prompt is drawn with it.
+                applyHideFp();
             }
         }
         return sPrintOnPage || now < sPrintTailUntil;
@@ -7380,26 +7406,96 @@ public class Main extends XposedModule {
     }
 
     /**
-     * Applies the current setting to every icon view still alive. Runs on the main thread: the
+     * Applies the current answer to every icon view still alive. Runs on the main thread: the
      * receiver has no handler of its own, so it is already there.
      *
-     * The page's answer rather than the switch's, because this is the one place the alpha is
-     * written after a view exists: the switch is flipped in the app, which is an unlocked screen
-     * (hidePrintNow), and a print dimmed here would stay dimmed on every screen the icon is drawn
-     * on - the per-draw hooks decide the lock for themselves.
+     * The page's answer rather than the switch's, and never a value of this module's own: while
+     * the phone is locked the view is dimmed to 0 and what it HAD is kept; once it is not, that
+     * value goes back. The dim is the belt to the paint hooks' braces - on this phone the print is
+     * painted by the animation view, but a build that paints with the icon view needs the alpha as
+     * well - and leaving it in place past the lock is what made the print invisible on an unlocked
+     * phone (2026-09-27: this runs at startup too, where the phone is locked, so the animation view
+     * was dimmed for the life of the process and every fingerprint prompt after the unlock - an
+     * app's, a payment's - drew nothing).
      */
     private static void applyHideFp() {
         adoptFodIcons();
-        float alpha = hidePrintNow() ? 0f : 1f;
         java.util.List<View> views;
         synchronized (sFodIcons) {
             views = new java.util.ArrayList<>(sFodIcons.keySet());
         }
-        for (View v : views) {
-            try {
-                v.setAlpha(alpha);
-            } catch (Throwable ignored) {
+        for (View v : views) dimFodIcon(v);
+    }
+
+    /**
+     * The switch, or a SystemUI that has just started: the answer is asked for again - not the
+     * cached one - and the alphas follow it.
+     */
+    private static void refreshHideFp() {
+        sPrintAskAt = 0L;
+        hidePrintNow();
+        // And once more outright: a move applies this from inside hidePrintNow, an answer that
+        // did not move needs nothing, and the call is idempotent either way.
+        applyHideFp();
+    }
+
+    /**
+     * For `op fod`: every print view this module has seen, with the alpha it has now, the alpha it
+     * would be handed back, and whether this module is holding it down right now.
+     */
+    private static String describeFod() {
+        adoptFodIcons();
+        boolean hide = sHideFp && sPrintOnPage;
+        StringBuilder sb = new StringBuilder("hidefp=").append(sHideFp ? 1 : 0)
+                .append(" onPage=").append(sPrintOnPage)
+                .append(" hiding=").append(hide)
+                .append(" tail=").append(Math.max(0L, sPrintTailUntil
+                        - android.os.SystemClock.uptimeMillis())).append("ms");
+        java.util.List<View> views;
+        synchronized (sFodIcons) {
+            views = new java.util.ArrayList<>(sFodIcons.keySet());
+        }
+        synchronized (sFodWas) {
+            for (View v : views) {
+                Float was = sFodWas.get(v);
+                Float now;
+                int vis;
+                try {
+                    now = v.getAlpha();
+                    vis = v.getVisibility();
+                } catch (Throwable t) {
+                    continue;
+                }
+                sb.append("\n  ").append(v.getClass().getSimpleName())
+                        .append(" alpha=").append(now).append(" vis=").append(vis)
+                        .append(" attached=").append(v.isAttachedToWindow())
+                        .append(was == null ? " (ours: none)" : " (ours: " + was + ")");
             }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * One icon view's alpha for the answer in force: 0 while the phone is locked, its own value
+     * back otherwise. The value it had is remembered the first time this dims it, so the view is
+     * never left at an alpha this module chose - which is what "the fingerprint icon never came
+     * back after the unlock" was.
+     */
+    private static void dimFodIcon(View v) {
+        try {
+            if (sHideFp && sPrintOnPage) {
+                if (!sFodWas.containsKey(v)) sFodWas.put(v, v.getAlpha());
+                if (v.getAlpha() != 0f) v.setAlpha(0f);
+            } else {
+                Float was = sFodWas.remove(v);
+                if (was != null && v.getAlpha() != was) {
+                    v.setAlpha(was);
+                    Xp.log(TAG + "the print's alpha is back to " + was + " on "
+                            + v.getClass().getSimpleName());
+                }
+            }
+        } catch (Throwable ignored) {
+            // A view we cannot dim is a visible print, not a broken keyguard.
         }
     }
 
