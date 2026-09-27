@@ -1141,6 +1141,23 @@ final class CoverPush {
      * that missed by 50ms still cost the full 700. Fourteen tries covers the same ~1.6s window.
      */
     private static final long ART_RETRY_MS = 120L;
+    /**
+     * How long a track change keeps waiting for artwork that has not turned up at all, and how
+     * long between those looks.
+     *
+     * The budget above is a poll inside one track change, and a player that is slower than it -
+     * measured on device: a session that fills its bitmap in seconds after the metadata, and Soda
+     * Music later still - used to leave the wallpaper on the previous album for good, because the
+     * push had already spent its tries and nothing asked again. The card's own thumbnail had the
+     * same hole. So after the tries are spent the source is asked again a few times over the next
+     * several seconds, and the moment a picture that is not the one already up arrives, the
+     * wallpaper and the card change together as they would have at the start.
+     *
+     * Only for a real track change: a manual push is a "hand it over again" and is answered with
+     * whatever the source has at that moment.
+     */
+    private static final int LATE_ART_ROUNDS = 5;
+    private static final long LATE_ART_MS = 1200L;
     /** When a skip was last asked for, and which way. See the TransportControls hook. */
     private static volatile long sSkipAt;
     private static volatile int sSkipDir;
@@ -1275,7 +1292,7 @@ final class CoverPush {
 
     private static void tryPushArt(final Context ctx, final int attempt, final boolean fresh,
                                    final int gen) {
-        tryPushArt(ctx, attempt, fresh, gen, false);
+        tryPushArt(ctx, attempt, fresh, gen, false, 0);
     }
 
     /**
@@ -1285,9 +1302,12 @@ final class CoverPush {
      * next one instead. The try budget is untouched, so the worst case is exactly what it was;
      * what changes is that the common case stops spending it. The session is still asked first
      * on every attempt, so a player that does fill its bitmap in late is still picked up.
+     *
+     * [late] counts the rounds started after the tries above were spent, for a player whose
+     * artwork is slower than the whole poll. See LATE_ART_ROUNDS.
      */
     private static void tryPushArt(final Context ctx, final int attempt, final boolean fresh,
-                                   final int gen, final boolean allowCard) {
+                                   final int gen, final boolean allowCard, final int late) {
         Main.worker().postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -1295,7 +1315,11 @@ final class CoverPush {
                     Xp.log(Main.TAG + "art push superseded, dropping it");
                     return;
                 }
-                boolean last = attempt >= ART_TRIES - 1;
+                // A late round is one look of its own, spaced out: the poll above is for a player
+                // that answers in fractions of a second, this one for a player that answers in
+                // seconds, and running the poll again inside it would only spend it on the same
+                // missing bitmap.
+                boolean last = attempt >= ART_TRIES - 1 || late > 0;
                 int[] sessionBits = new int[1];
                 Bitmap art = Main.albumArt(ctx, last || allowCard, sessionBits);
                 int print = art == null ? 0 : artPrint(art);
@@ -1322,7 +1346,19 @@ final class CoverPush {
                     Xp.log(Main.TAG + "art " + (art == null ? "not ready"
                                     : stale ? "still the old one" : "smaller than the one up")
                             + ", retrying (" + (attempt + 2) + "/" + ART_TRIES + ")");
-                    tryPushArt(ctx, attempt + 1, fresh, gen, allowCard || bare);
+                    tryPushArt(ctx, attempt + 1, fresh, gen, allowCard || bare, late);
+                    return;
+                }
+                // Nothing at all, or the picture already up, on the last try. The same album twice
+                // in a row is a real thing, but so is a player that has simply not got there yet,
+                // and the two look identical from here - so the source is asked again a moment
+                // later rather than the wallpaper being left on the old album for good. No late
+                // round for a smaller copy: that artwork is there, it is just not the best one.
+                if (fresh && late < LATE_ART_ROUNDS && (art == null || stale)) {
+                    Xp.log(Main.TAG + "art " + (art == null ? "never turned up" : "still the old one")
+                            + ", asking again in " + LATE_ART_MS + "ms ("
+                            + (late + 1) + "/" + LATE_ART_ROUNDS + ")");
+                    tryPushArt(ctx, 0, true, gen, false, late + 1);
                     return;
                 }
                 if (stale) {
@@ -1352,9 +1388,11 @@ final class CoverPush {
                 Main.sCtTries = attempt + 1;
                 Main.sCtArt = android.os.SystemClock.uptimeMillis();
                 pushArtToWallpaper(ctx, true, art);
-                Main.refreshCardArt(art);
+                // The card gets the same picture on the same beat as the wallpaper, through the
+                // card's own flip. See Main.cardArtReady().
+                Main.cardArtReady(art);
             }
-        }, attempt == 0 ? 0L : ART_RETRY_MS);
+        }, attempt != 0 ? ART_RETRY_MS : (late == 0 ? 0L : LATE_ART_MS));
     }
 
     /**

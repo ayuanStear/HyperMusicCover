@@ -80,6 +80,15 @@ public class Main extends XposedModule {
      */
     private static final String CLS_MEDIA_BUTTONS = "com.android.systemui.statusbar.notification"
             + ".mediacontrol.MiuiMediaActionButtonUtils";
+    /**
+     * The card's album flip: a Y rotation of the thumbnail's container that changes the picture
+     * at the moment it passes edge-on. Driving it here is what makes a track change look like the
+     * system's own - see cardArtReady().
+     */
+    private static final String CLS_ALBUM_FLIP = "com.android.systemui.statusbar.notification"
+            + ".mediacontrol.MiuiMediaAlbumAnimationUtils";
+    /** The listener that flip calls at its midpoint, implemented by whichever caller asked. */
+    private static final String CLS_FLIP_LISTENER = CLS_ALBUM_FLIP + "$OnFlipListener";
     private static final String CLS_KG_WALLPAPER_MANAGER =
             "com.android.keyguard.wallpaper.MiuiKeyguardWallPaperManager";
     /**
@@ -590,6 +599,24 @@ public class Main extends XposedModule {
     private static long sCardSampleAt;
     private static ViewTreeObserver.OnPreDrawListener sCardGuard;
     private static View sCardGuarded, sCardArt, sCardTitle, sCardArtist;
+    /** The card's controller, captured from the hook that owns the card's data. See cardArtReady. */
+    private static volatile Object sCardController;
+    /** MIUI's flip-listener interface, resolved once, so a flip can be driven with our own. */
+    private static volatile Class<?> sFlipListenerClass;
+    /**
+     * The listener of the flip being driven right now, so the hook on MIUI's own flip can tell
+     * that call apart from MIUI's.
+     */
+    private static volatile Object sOurFlipCall;
+    /**
+     * The picture the card's thumbnail holds, as the same 8x8 print the push uses.
+     *
+     * CoverPush.sArtPrint is what the WALLPAPER shows, which says nothing about the card once the
+     * cover has been tapped away and the pushes have stopped. This is the card's own side of the
+     * pair, and it is what tells "the player has not produced the new artwork yet" apart from
+     * "the card is already right".
+     */
+    private static volatile int sCardArtPrint;
     /** The title carrying our play/pause listener, and what it was clickable-wise before. */
     private static View sCardTitleTapped;
     private static boolean sCardTitleClickable;
@@ -1437,6 +1464,16 @@ public class Main extends XposedModule {
                 java.util.List<Object> args = chain.getArgs();
                 Object md = args.size() > 1 ? args.get(1) : null;
                 freshenMediaData(md);
+                // The card's own controller, kept so a track change can be handed to the card's
+                // flip the way MIUI's own pipeline would: this object owns the view holder (the
+                // flip container and the thumbnail inside it), the album animation and the
+                // transport buttons. See cardArtReady().
+                //
+                // Off the ARGUMENTS rather than the receiver: this static is the getter/setter
+                // pair R8 made for the controller's own field, so the controller is parameter 0
+                // and the MediaData is parameter 1. getThisObject() is null here, which is what
+                // left the flip with nothing to flip and fell back to the direct write.
+                sCardController = args.isEmpty() ? null : args.get(0);
                 Object result = chain.proceed();
                 onCardChanged(md);
                 return result;
@@ -1444,6 +1481,57 @@ public class Main extends XposedModule {
             Xp.log(TAG + "media card hooked");
         } catch (Throwable t) {
             Xp.log(TAG + "media card hook failed: " + t);
+        }
+
+        // The card's album flip, so a track change is one animation and not two.
+        //
+        // The card is fed by MIUI's notification pipeline, and a player that publishes late - Soda
+        // Music measured at 30s and more - leaves MIUI flipping to a picture that is already on the
+        // card. MIUI's flip is written for the moment the picture changes, and by then there is
+        // nothing left for it to change: the container turns edge-on and comes back with the same
+        // picture, which reads as a second, pointless turn. The animated flag is dropped exactly
+        // there - the flip's own no-animation path calls its listener at once, so the picture is
+        // re-stamped and nothing moves - and only while the card is the module's, and only when the
+        // picture MIUI is about to reveal is the one already showing. A flip MIUI is entitled to (a
+        // card that has not been caught up, a track the module never touched) keeps its animation,
+        // and the module's own driven flip is recognised and passed straight through.
+        try {
+            Class<?> flip = Xp.findClass(CLS_ALBUM_FLIP, cl);
+            sFlipListenerClass = Xp.findClass(CLS_FLIP_LISTENER, cl);
+            Xp.hookAll(flip, "startFlipAnimation", chain -> {
+                Object[] args = null;
+                try {
+                    if (!cardOurs()) return chain.proceed();
+                    java.util.List<Object> a = chain.getArgs();
+                    Object view = a.isEmpty() ? null : a.get(0);
+                    Object animated = a.size() > 2 ? a.get(2) : null;
+                    // Not our own call: the flip below is driven through this same method, and a
+                    // flip started here is by definition turning to a picture that is not up yet.
+                    Object listener = a.size() > 3 ? a.get(3) : null;
+                    if (listener != null && listener == sOurFlipCall) return chain.proceed();
+                    // The test is MIUI's own: the picture this bind is about to reveal, against the
+                    // one the container is already showing. Equal means the flip would turn the
+                    // card edge-on and bring back what was already there - the second animation a
+                    // late publish produces - so it is asked for without animation, and the flip's
+                    // own no-animation path stamps the picture at once and moves nothing.
+                    //
+                    // Asked of the objects rather than of the module's own record on purpose: what
+                    // MIUI is revealing can be its own copy of the cover, at another size, and only
+                    // the picture it is holding answers for the flip it is about to run.
+                    int incoming = incomingArtPrint();
+                    if (Boolean.TRUE.equals(animated) && view instanceof View && incoming != 0
+                            && viewShows((View) view, incoming)) {
+                        args = a.toArray(new Object[0]);
+                        args[2] = Boolean.FALSE;
+                        Xp.log(TAG + "miui's flip dropped, the card already shows this cover");
+                    }
+                } catch (Throwable ignored) {
+                }
+                return args == null ? chain.proceed() : chain.proceed(args);
+            });
+            Xp.log(TAG + "media album flip hooked");
+        } catch (Throwable t) {
+            Xp.log(TAG + "media album flip hook failed, MIUI's second flip stays: " + t);
         }
 
         // A skip holds the play/pause icon back for two seconds - MiuiMediaActionButtonUtils
@@ -7153,6 +7241,18 @@ public class Main extends XposedModule {
     private static final long CARD_RETRY_MS = 250L;
     /** How many times the artwork write waits for a card that is still being inflated. */
     private static final int CARD_ART_RETRIES = 4;
+    /**
+     * How long a settled track's artwork is waited for, and how often it is looked at.
+     *
+     * A player fills its own bitmap in asynchronously, and the module's first look at a track
+     * change usually lands before it is there. The old code took that first empty answer as "the
+     * player has nothing" and left the card on the previous album, which for a late publisher is
+     * until MIUI rebinds - tens of seconds. 20 x 250ms covers the players that do produce one, and
+     * the write is skipped as soon as the card already carries the settled picture, so a player
+     * that never changes it costs a metadata read per step and nothing else.
+     */
+    private static final int CARD_ART_WAIT_TRIES = 20;
+    private static final long CARD_ART_WAIT_MS = 250L;
     /** How long the card has to hold still before its position is believed. */
     private static final long CARD_SETTLE_MS = 400L;
 
@@ -8853,26 +8953,346 @@ public class Main extends XposedModule {
      * it does arrive.
      */
     private static void refreshCardArtForSettledTrack() {
+        refreshCardArtForSettledTrack(sTrackKey, 0);
+    }
+
+    /**
+     * [forKey] pins the wait to the track it was started for, so a second skip does not leave the
+     * first one's timer running; [attempt] counts the looks taken while the player was still
+     * without a bitmap of its own.
+     *
+     * Looking once was the whole of it before, and one look is exactly what a player cannot always
+     * answer: its artwork is filled in asynchronously, often a few hundred ms behind the metadata
+     * that announced the track. The single empty answer then read as "nothing to do" and the card
+     * kept the previous album - which is the case the user reported as the picture failing to
+     * update. The player is asked again instead, until it produces a picture the card does not
+     * already carry.
+     */
+    private static void refreshCardArtForSettledTrack(final String forKey, final int attempt) {
         try {
             MediaController w = sWatched;
             if (sCoverMode || w == null) return;
+            if (!forKey.isEmpty() && !sameTrack(trackKey(w), forKey)) return;
             MediaMetadata m = w.getMetadata();
             if (m == null) return;
             Bitmap art = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
             if (art == null) art = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
             if (art == null && m.getDescription() != null) art = m.getDescription().getIconBitmap();
-            if (art == null) return;
-            int print = CoverPush.artPrint(art);
-            if (print != 0 && print == CoverPush.sArtPrint) {
-                Xp.log(TAG + "card art still the one already up, left to MIUI's rebind");
+            int print = art == null ? 0 : CoverPush.artPrint(art);
+            // 0 is "no bitmap yet"; a print the card already carries is "the player has not moved
+            // on". Both mean wait rather than write, and MIUI's own rebind is no longer relied on
+            // to cover for us - it is the thing that is late.
+            if (art == null || print == 0 || print == sCardArtPrint) {
+                if (attempt < CARD_ART_WAIT_TRIES && cardOurs()) {
+                    if (attempt == 0) {
+                        Xp.log(TAG + "card art not there yet ("
+                                + (art == null ? "no bitmap" : "still the one up")
+                                + "), waiting for the player");
+                    }
+                    main().postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            refreshCardArtForSettledTrack(forKey, attempt + 1);
+                        }
+                    }, CARD_ART_WAIT_MS);
+                } else {
+                    Xp.log(TAG + "card art: the player never produced one for this track");
+                }
                 return;
             }
             Xp.log(TAG + "card art <- session, cover tapped away "
                     + art.getWidth() + "x" + art.getHeight());
-            refreshCardArt(art);
+            cardArtReady(art);
         } catch (Throwable t) {
             Xp.log(TAG + "card art for the settled track failed: " + t);
         }
+    }
+
+    /**
+     * Puts the settled track's cover on the card, through the card's own flip when the card is
+     * the module's.
+     *
+     * Called by the push pipeline at the moment the new artwork is confirmed - the same moment the
+     * wallpaper is handed over - and by the tapped-away path when the player finally produces its
+     * bitmap. This is the one place the card's picture is set, so the reveal is one event: the
+     * thumbnail turns over and the new cover is there when it comes back, exactly as MIUI's own
+     * bind does it, and the lock screen's big picture changes on the same beat instead of a second
+     * animation arriving afterwards.
+     */
+    static void cardArtReady(final Bitmap art) {
+        if (art == null) return;
+        if (!cardOurs()) {
+            refreshCardArt(art);
+            return;
+        }
+        flipCardTo(art);
+    }
+
+    /** How long after a driven flip the card is checked for the picture it was meant to reveal. */
+    private static final long CARD_FLIP_CHECK_MS = 700L;
+
+    /**
+     * Hands the new cover to the card's own album flip, with this module as the listener.
+     *
+     * MIUI changes the picture at the midpoint of that flip - edge-on, when nothing can be seen -
+     * so driving it is what makes a module-pushed track change look like the system's own. The
+     * alternative, which this replaces, was writing the thumbnail directly: the picture changed at
+     * once, and MIUI's own bind then flipped to a picture that was already there.
+     *
+     * Refusals are all handled by writing the picture straight in instead: no controller yet, no
+     * card on screen, a flip already running (MIUI's guard drops a second one without ever calling
+     * the listener), or a build where the class moved.
+     */
+    private static void flipCardTo(final Bitmap art) {
+        flipCardTo(art, 0);
+    }
+
+    /**
+     * How many times a refused flip is asked for again before the picture is simply written in.
+     *
+     * MIUI's own guard drops a flip asked for while another is running on the same container, and
+     * it does that silently - the listener never runs, so nothing would ever put the picture up.
+     * Seen on device when two skips land inside one ~450ms flip. Asking again a beat later is what
+     * turns that into the same animation a moment afterwards instead of a picture that appears with
+     * no animation at all; the write below is still the backstop when the answer is no again.
+     */
+    private static final int CARD_FLIP_TRIES = 2;
+    /** How long before a flip the card was not ready for is asked for again. */
+    private static final long CARD_FLIP_RETRY_MS = 250L;
+
+    private static void flipCardTo(final Bitmap art, final int attempt) {
+        final int print = CoverPush.artPrint(art);
+        main().post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // The retry below runs a moment later, and by then the track may have moved on
+                    // again: showing an older album over a newer one is worse than showing nothing,
+                    // so a flip whose picture is no longer what the session carries is dropped.
+                    int now = sessionArtPrint();
+                    if (now != 0 && print != 0 && now != print) {
+                        Xp.log(TAG + "the session has a newer cover, dropping the flip for the last one");
+                        return;
+                    }
+                    View albumView = cardFlipView();
+                    Object utils = cardFlipUtils();
+                    if (albumView == null || utils == null || print == 0) {
+                        if (attempt + 1 < CARD_FLIP_TRIES) {
+                            Xp.log(TAG + "no card to flip yet, asking again");
+                            main().postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    flipCardTo(art, attempt + 1);
+                                }
+                            }, CARD_FLIP_RETRY_MS);
+                            return;
+                        }
+                        Xp.log(TAG + "no card to flip (view=" + (albumView != null)
+                                + " anim=" + (utils != null) + " print=" + print
+                                + "), writing the cover straight in");
+                        refreshCardArt(art);
+                        return;
+                    }
+                    if (viewShows(albumView, print)) {
+                        // MIUI's own bind got there first: the flip that revealed this picture has
+                        // already run, and running ours on top of it is the second animation.
+                        Xp.log(TAG + "card already shows this cover, no flip needed");
+                        sCardArtPrint = print;
+                        return;
+                    }
+                    Object listener = flipListener(art);
+                    if (listener == null) {
+                        Xp.log(TAG + "no flip listener class on this build, writing the cover");
+                        refreshCardArt(art);
+                        return;
+                    }
+                    final boolean positive = cardFlipDirection();
+                    sOurFlipCall = listener;
+                    try {
+                        Xp.callMethod(utils, "startFlipAnimation",
+                                albumView, Boolean.valueOf(positive), Boolean.TRUE, listener);
+                    } finally {
+                        sOurFlipCall = null;
+                    }
+                    Xp.log(TAG + "card flipped to the settled cover ("
+                            + (positive ? "forward" : "back") + ")");
+                    main().postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (viewShows(albumView, print)) return;
+                            if (attempt + 1 < CARD_FLIP_TRIES) {
+                                Xp.log(TAG + "the flip was refused, asking again");
+                                flipCardTo(art, attempt + 1);
+                                return;
+                            }
+                            Xp.log(TAG + "the flip was refused, writing the cover in");
+                            refreshCardArt(art);
+                        }
+                    }, CARD_FLIP_CHECK_MS);
+                } catch (Throwable t) {
+                    Xp.log(TAG + "card flip failed, writing the cover instead: " + t);
+                    refreshCardArt(art);
+                }
+            }
+        });
+    }
+
+    /** The card's flip container, or null when the card is not attached. */
+    private static View cardFlipView() {
+        Object holder = cardHolder();
+        try {
+            Object v = holder == null ? null : Xp.getObjectField(holder, "albumView");
+            return v instanceof View ? (View) v : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * The print of the artwork the followed session carries right now, or 0 when it has none.
+     *
+     * Read by the flip's retry so a picture that has been overtaken is never put up: a skip that
+     * lands during the wait is answered by a newer flip of its own, and this one has to stand down.
+     */
+    private static int sessionArtPrint() {
+        try {
+            MediaController w = sWatched;
+            MediaMetadata m = w == null ? null : w.getMetadata();
+            if (m == null) return 0;
+            Bitmap art = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+            if (art == null) art = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
+            if (art == null && m.getDescription() != null) art = m.getDescription().getIconBitmap();
+            return art == null ? 0 : CoverPush.artPrint(art);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /**
+     * The view holder behind the card, from the view controller or - before the controller has
+     * been attached to it - straight off the controller that owns the card.
+     */
+    private static Object cardHolder() {
+        try {
+            Object vc = sCardController == null ? null
+                    : Xp.getObjectField(sCardController, "mediaViewController");
+            Object holder = vc == null ? null : Xp.getObjectField(vc, "holder");
+            if (holder != null) return holder;
+            return sCardController == null ? null
+                    : Xp.getObjectField(sCardController, "mediaViewHolder");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** The card's own album animation, the one MIUI's bind uses. */
+    private static Object cardFlipUtils() {
+        try {
+            Object vc = sCardController == null ? null
+                    : Xp.getObjectField(sCardController, "mediaViewController");
+            return vc == null ? null : Xp.getObjectField(vc, "miuiMediaAlbumAnimationUtils");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * Which way the card should turn: the way the user's last press asked for.
+     *
+     * MIUI leaves the button's own opinion in this field - the click handler writes it, next means
+     * forward and previous means back - and the card's bind reads it for the same reason. Reading
+     * it here keeps a module-driven flip pointing the same way the system's would.
+     */
+    private static boolean cardFlipDirection() {
+        try {
+            Object vc = sCardController == null ? null
+                    : Xp.getObjectField(sCardController, "mediaViewController");
+            Object buttons = vc == null ? null
+                    : Xp.getObjectField(vc, "miuiMediaActionButtonUtils");
+            Object positive = buttons == null ? null
+                    : Xp.getObjectField(buttons, "isFlipPositive");
+            return !(positive instanceof Boolean) || (Boolean) positive;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /**
+     * Our own implementation of MIUI's flip listener, which writes the new cover at the midpoint.
+     *
+     * A proxy rather than MIUI's own listener object because that one carries MIUI's own drawable,
+     * which is the lagging copy this whole path exists to get in front of.
+     */
+    private static Object flipListener(final Bitmap art) {
+        final Class<?> iface = sFlipListenerClass;
+        if (iface == null) return null;
+        try {
+            return java.lang.reflect.Proxy.newProxyInstance(iface.getClassLoader(),
+                    new Class<?>[] {iface}, new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] a) {
+                            if ("onFlip".equals(m.getName())) refreshCardArt(art);
+                            if ("toString".equals(m.getName())) return "mc flip";
+                            if ("hashCode".equals(m.getName())) return Integer.valueOf(0);
+                            return null;
+                        }
+                    });
+        } catch (Throwable t) {
+            Xp.log(TAG + "flip listener could not be built: " + t);
+            return null;
+        }
+    }
+
+    /** Whether the flip container already holds the cover with this print. */
+    private static boolean viewShows(View root, int print) {
+        if (root == null || print == 0) return false;
+        try {
+            int id = root.getResources()
+                    .getIdentifier("album_art_image", "id", "com.android.systemui");
+            return id != 0 && showsPrint(root, id, print);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * The picture MIUI's card bind is holding, as a print - the one its flip is about to reveal.
+     *
+     * Set by the bind just before it calls for the flip, so at the moment the flip starts this is
+     * exactly what the animation will put on the card at its midpoint. 0 whenever it cannot be
+     * read, which reads as "not the same picture" and leaves the flip alone.
+     */
+    private static int incomingArtPrint() {
+        try {
+            Object vc = sCardController == null ? null
+                    : Xp.getObjectField(sCardController, "mediaViewController");
+            Object d = vc == null ? null : Xp.getObjectField(vc, "artWorkDrawable");
+            if (!(d instanceof Drawable)) return 0;
+            Drawable dr = (Drawable) d;
+            if (!(dr instanceof BitmapDrawable)) return 0;
+            Bitmap b = ((BitmapDrawable) dr).getBitmap();
+            return b == null ? 0 : CoverPush.artPrint(b);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static boolean showsPrint(View v, int id, int print) {
+        if (v.getId() == id && v instanceof ImageView) {
+            Drawable d = ((ImageView) v).getDrawable();
+            if (d instanceof BitmapDrawable) {
+                Bitmap b = ((BitmapDrawable) d).getBitmap();
+                return b != null && CoverPush.artPrint(b) == print;
+            }
+            return false;
+        }
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                if (showsPrint(g.getChildAt(i), id, print)) return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -8911,6 +9331,9 @@ public class Main extends XposedModule {
                         Xp.log(TAG + "card art refresh: no album_art_image id in this build");
                         return;
                     }
+                    // What the card holds, remembered, so a later look at the same track can tell
+                    // "already right" from "the player has not produced the new picture yet".
+                    int print = CoverPush.artPrint(art);
                     if (writeArt(anchor.getRootView(), id, art) == 0) {
                         if (attempt < CARD_ART_RETRIES) {
                             main().postDelayed(new Runnable() {
@@ -8922,6 +9345,8 @@ public class Main extends XposedModule {
                         } else {
                             Xp.log(TAG + "card art refresh: no album_art_image on screen");
                         }
+                    } else if (print != 0) {
+                        sCardArtPrint = print;
                     }
                 } catch (Throwable t) {
                     Xp.log(TAG + "card art refresh failed: " + t);
