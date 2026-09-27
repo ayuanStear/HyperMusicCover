@@ -1034,6 +1034,7 @@ object MiniPlayerRuntime {
 
     private const val DRAG_NUDGE_DP = 48f
 
+
     private fun dispatchTo(target: View, ev: MotionEvent, action: Int) {
         val xy = IntArray(2).also(target::getLocationOnScreen)
         val copy = MotionEvent.obtain(ev)
@@ -7209,12 +7210,21 @@ private class MiniPlayerController(
         if (editButtonUp()) return null
         val d = density()
         val xy = IntArray(2).also(view::getLocationOnScreen)
-        // From just above the pill to the bottom of the screen - a thumb starts a swipe low -
-        // and across to the torch and camera, which keep their own touches.
+        // From just above the pill to just below it, and across to the torch and camera, which
+        // keep their own touches.
+        //
+        // The bottom used to be the screen's own edge - a thumb starts a swipe low - and that is
+        // what stopped the lock screen unlocking at all once a notification island held the row:
+        // the row is wide, so a finger landing anywhere along the bottom of the screen was inside
+        // this rectangle, the whole gesture went to the module, and swipe-to-unlock never saw it
+        // (reported 2026-09-27). "On the capsule" is the ask, and the screen's bottom strip is
+        // the keyguard's: the finger has to land on the island, or within a thumb's width of its
+        // lower edge, to be pulling it rather than unlocking.
+        val under = xy[1] + view.height + BELOW_PILL_DP * d
         val lx = buttonEdge(left, inner = true) ?: (xy[0] - 8f * d)
         val rx = buttonEdge(right, inner = false) ?: (xy[0] + view.width + 8f * d)
         val inside = x >= minOf(lx, xy[0].toFloat()) && x < maxOf(rx, xy[0] + view.width.toFloat())
-            && y >= xy[1] - 36f * d && y < host.height
+            && y >= xy[1] - 36f * d && y < min(under, host.height.toFloat())
         // The small island first: the camera's button (its shortcut_view_right_layout above
         // all) reaches well past its disc, over the small island's right half. Asked second, a
         // tap there was the camera's - and opened it (filmed 2026-09-25). Taken here, the whole
@@ -8612,6 +8622,14 @@ private const val CUTOUT_SHARE = 0.55f
 
 /** How far an island's content goes out of focus leaving the big island's place. */
 private const val SWAP_BLUR_DP = 10f
+
+/**
+ * How far below the island a finger may land and still be pulling it, in dp.
+ *
+ * Small on purpose: the strip under this is the keyguard's own swipe-to-unlock, and the island
+ * sits close enough to the screen's bottom that a larger margin swallows it. See touchTarget.
+ */
+private const val BELOW_PILL_DP = 12f
 
 /** The music's place in the row of islands, beside the notifications' keys. */
 private const val MUSIC_ISLAND = "\u0000music"
