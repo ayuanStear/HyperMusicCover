@@ -58,8 +58,6 @@ import com.os4.musiccover.ui.component.effect.BgEffectBackground
 import com.os4.musiccover.ui.util.BlurredBar
 import com.os4.musiccover.ui.util.ColorBlendToken
 import com.os4.musiccover.ui.util.isInDarkTheme
-import com.os4.musiccover.ui.util.openQqGroup
-import com.os4.musiccover.ui.util.openTelegramGroup
 import com.os4.musiccover.ui.util.pageContentPadding
 import com.os4.musiccover.ui.util.pageScrollModifiers
 import com.os4.musiccover.ui.util.rememberBlurBackdrop
@@ -305,65 +303,12 @@ private fun AboutContent(
                             onDirectUpdate = { update.directUpdate(ctx) },
                         )
                     }
-                    Card(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .padding(top = 12.dp)
-                            .then(
-                                if (contentBackdrop != null) {
-                                    Modifier.textureBlur(
-                                        backdrop = contentBackdrop,
-                                        shape = RoundedCornerShape(16.dp),
-                                        blurRadius = blurRadius,
-                                        noiseCoefficient = noiseCoefficient,
-                                        colors = BlurDefaults.blurColors(
-                                            blendColors = cardBlend,
-                                            brightness = brightness,
-                                            contrast = contrast,
-                                            saturation = saturation,
-                                        ),
-                                    )
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                        colors = CardDefaults.defaultColors(
-                            if (contentBackdrop != null) Color.Transparent else colorScheme.surfaceContainer,
-                            Color.Transparent,
-                        ),
-                    ) {
-                        ArrowPreference(
-                            title = stringResource(R.string.about_source_code),
-                            summary = stringResource(R.string.about_source_code_summary),
-                            onClick = { uriHandler.openUri("https://github.com/zyl6932/HyperMusicCover") },
-                        )
-                        ArrowPreference(
-                            title = stringResource(R.string.about_telegram),
-                            summary = stringResource(R.string.about_telegram_summary),
-                            onClick = {
-                                // Falls back to the browser only when no Telegram client answered.
-                                if (!ctx.openTelegramGroup("https://t.me/HyperMusicCover")) {
-                                    uriHandler.openUri("https://t.me/HyperMusicCover")
-                                }
-                            },
-                        )
-                        ArrowPreference(
-                            title = stringResource(R.string.about_qq_group),
-                            summary = stringResource(R.string.about_qq_group_summary),
-                            onClick = {
-                                // The group number, not the qm.qq.com link, is what QQ's card
-                                // route takes; the link is only here for the browser fallback.
-                                if (!ctx.openQqGroup("392493127")) {
-                                    uriHandler.openUri("https://qm.qq.com/q/RcLbYXgBy2")
-                                }
-                            },
-                        )
-                        ArrowPreference(
-                            title = stringResource(R.string.about_feedback),
-                            summary = stringResource(R.string.about_feedback_summary),
-                            onClick = { uriHandler.openUri("https://github.com/zyl6932/HyperMusicCover/issues") },
-                        )
-                    }
+                    // The card that used to sit here - the project address, the Telegram and QQ
+                    // groups and a feedback link - is gone (2026-09-27). The address it carried is
+                    // the one the 获取更新 dialog already offers, and the two groups and the issue
+                    // tracker were the only rows on this page that led somewhere other than this
+                    // app's own licences and credits. What is left is the update row above, the
+                    // licence card below, and nothing that repeats either.
                     Card(
                         modifier = Modifier
                             .padding(horizontal = 12.dp)

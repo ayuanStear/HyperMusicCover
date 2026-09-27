@@ -126,6 +126,15 @@ object ModuleBridge {
          */
         val fpSinkPx: Int = 0,
         /**
+         * How long the Xiaomi super island - the pill at the top of the screen that shows what
+         * is playing - is drawn, in screen pixels, or 0 for the system's own length.
+         */
+        val islandLengthPx: Int = 0,
+        /** The shortest the plugin's island can be, in pixels; 0 until it has been measured. */
+        val islandMinPx: Int = 0,
+        /** The length the system last picked for itself, in pixels; 0 until it has been seen. */
+        val islandSystemPx: Int = 0,
+        /**
          * The notification-shade settings, keyed exactly as the module's own CFG_KEYS.
          *
          * Read out of the reply by PREFIX rather than field by field. The module generates its
@@ -286,6 +295,16 @@ object ModuleBridge {
             putExtra("mode", mode)
             putExtra("px", sinkPx)
         }
+
+    /**
+     * The Xiaomi super island's length in pixels, or 0 for the length the system picks.
+     *
+     * Its own op rather than a field of something else: the island is drawn by the control
+     * centre plugin and has nothing to do with the lock screen's pill, so there is nothing on
+     * the module side for it to share a message with.
+     */
+    fun setIslandLength(context: Context, px: Int) =
+        send(context, "islandlen") { putExtra("px", px) }
 
     /**
      * One shade setting, by the module's own key.
@@ -537,6 +556,9 @@ object ModuleBridge {
             sessionLyric = b.getBoolean("sessionlyric", false),
             fpAvoid = b.getInt("fpavoid", 0),
             fpSinkPx = b.getInt("sinkpx", 0),
+            islandLengthPx = b.getInt("islandlen", 0),
+            islandMinPx = b.getInt("islandmin", 0),
+            islandSystemPx = b.getInt("islandsys", 0),
             shade = b.keySet()
                 .filter { it.startsWith("shade_") }
                 .associate { it.removePrefix("shade_") to b.getInt(it, 0) },

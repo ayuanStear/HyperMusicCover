@@ -568,6 +568,26 @@ public class Main extends XposedModule {
     private static volatile int sFpSinkPx;
     /** The widest extra sink the module will act on, in pixels. */
     private static final int FP_SINK_PX_MAX = 300;
+    /**
+     * How long the Xiaomi super island - the pill at the top of the screen that shows what is
+     * playing - is drawn, in screen pixels, or 0 for the length the system picks for itself.
+     *
+     * The number is the island view's own width. The plugin lays the island out as a left area,
+     * the camera cutout and a right area and lengths it to `cutout + twice the wider area`,
+     * clamped to a range it derives from the status bar's clock and battery; IslandLength hands
+     * it this number instead of that sum, which is what makes this a length rather than a cap.
+     * It is the super island only: the module's own lock screen pill has its own size settings
+     * and is untouched (2026-09-27).
+     */
+    private static volatile int sIslandLenPx;
+    /** The shortest the island is allowed to be: the plugin's own floor, once it has said it. */
+    private static volatile int sIslandMinPx;
+    /**
+     * The length the plugin last chose for itself, in pixels - what the settings page starts its
+     * slider from, because the island's own length is a function of its content and cannot be
+     * worked out from this side.
+     */
+    private static volatile int sIslandSysPx;
     /** Rate limit for the two probes that say the settings above are being applied. */
     private static long sPlayFreeAt, sSinkLogAt;
     /** The artwork field last compared, and whether it needed the session's copy. See cardArtNeeds. */
@@ -577,6 +597,35 @@ public class Main extends XposedModule {
 
     private static int clampSinkPx(int v) {
         return v < 0 ? 0 : Math.min(v, FP_SINK_PX_MAX);
+    }
+
+    /** The island length a request is allowed to mean: off, or a width this screen can hold. */
+    static int clampIslandLenPx(int v) {
+        if (v <= 0) return 0;
+        return sScreenW > 0 ? Math.min(v, sScreenW) : v;
+    }
+
+    /** What to draw the super island at, or 0 for the system's own answer. */
+    static int islandLengthPx() {
+        return sIslandLenPx;
+    }
+
+    static int islandMinPx() {
+        return sIslandMinPx;
+    }
+
+    static int islandSystemPx() {
+        return sIslandSysPx;
+    }
+
+    /** Called by IslandLength with the plugin's own floor, once it has measured one. */
+    static void noteIslandMinPx(int px) {
+        if (px > 0) sIslandMinPx = px;
+    }
+
+    /** Called by IslandLength with the length the system picked, while no length is set. */
+    static void noteIslandSystemPx(int px) {
+        if (px > 0) sIslandSysPx = px;
     }
     /**
      * Every fingerprint icon view built since SystemUI started, weakly held. The alpha is set at
@@ -1940,6 +1989,7 @@ public class Main extends XposedModule {
                     + "\nsawlyric=" + (LockLyrics.sSawSessionLyric ? 1 : 0)
                     + "\nfpavoid=" + sFpAvoid
                     + "\nfpsinkpx=" + sFpSinkPx
+                    + "\nislandlen=" + sIslandLenPx
                     + "\nminicfg=" + android.util.Base64.encodeToString(
                             MiniPlayerRuntime.configJson(sAppCtx).getBytes(java.nio.charset.StandardCharsets.UTF_8),
                             android.util.Base64.NO_WRAP)
@@ -2056,6 +2106,7 @@ public class Main extends XposedModule {
                         }
                         else if ("fpavoid".equals(k)) sFpAvoid = Integer.parseInt(v);
                         else if ("fpsinkpx".equals(k)) sFpSinkPx = clampSinkPx(Integer.parseInt(v));
+                        else if ("islandlen".equals(k)) sIslandLenPx = clampIslandLenPx(Integer.parseInt(v));
                         else if ("minicfg".equals(k)) MiniPlayerRuntime.applyConfig(sAppCtx,
                                 new String(android.util.Base64.decode(v, android.util.Base64.DEFAULT),
                                         java.nio.charset.StandardCharsets.UTF_8));
@@ -2573,6 +2624,19 @@ public class Main extends XposedModule {
                         Xp.log(TAG + "fingerprint avoid mode=" + sFpAvoid
                                 + " sink=" + sFpSinkPx + "px"
                                 + " (applies on the next recompute)");
+                    } else if ("islandlen".equals(op)) {
+                        // The super island's length. Absent means 0, which is "the system's own
+                        // answer" rather than a length, so the switch-off case and a restore of a
+                        // file that never had this key both land on the stock island.
+                        sIslandLenPx = clampIslandLenPx(i.getIntExtra("px", 0));
+                        saveState();
+                        // Re-measured now rather than at the next scene: the island is on screen
+                        // while this arrives, and a length that only lands on the next track
+                        // change reads as a setting that did not take.
+                        IslandLength.changed();
+                        Xp.log(TAG + "super island length "
+                                + (sIslandLenPx == 0 ? "system" : sIslandLenPx + "px")
+                                + (IslandLength.installed() ? "" : " (plugin not hooked yet)"));
                     } else if ("fadewp".equals(op)) {
                         sFadeWp = i.getBooleanExtra("on", !sFadeWp);
                         saveState();
@@ -2793,6 +2857,11 @@ public class Main extends XposedModule {
                                 || LyricSource.hasLyricInfo(sWatched));
                         out.putInt("fpavoid", sFpAvoid);
                         out.putInt("sinkpx", sFpSinkPx);
+                        // The super island's length, and the floor the plugin gives it - the app
+                        // draws its slider against these two numbers rather than against a guess.
+                        out.putInt("islandlen", sIslandLenPx);
+                        out.putInt("islandmin", sIslandMinPx);
+                        out.putInt("islandsys", sIslandSysPx);
                         // Everything the app's preview needs to be to scale. It draws a lock
                         // screen it cannot see, and every one of these is device-specific, so
                         // they are measured here rather than written down twice.

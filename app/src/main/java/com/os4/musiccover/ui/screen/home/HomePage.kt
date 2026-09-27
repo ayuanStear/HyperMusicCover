@@ -8,7 +8,6 @@
 package com.os4.musiccover.ui.screen.home
 
 import android.annotation.SuppressLint
-import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.Box
@@ -25,7 +24,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircleOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
-import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,7 +42,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.os4.musiccover.BuildConfig
-import com.os4.musiccover.DonateActivity
 import com.os4.musiccover.ModuleBridge
 import com.os4.musiccover.R
 import com.os4.musiccover.ui.component.DropdownItem
@@ -64,7 +61,6 @@ import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
-import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
@@ -298,39 +294,10 @@ fun HomePageView(
             }
         }
 
-        // Last on the page, under the device list. Asking comes after everything the page was
-        // opened for, never before it. It is a row rather than a button because everything else
-        // the user can tap in this app is a row, and a lone button here would read as a demand.
-        //
-        // No top padding of its own: the device card above already carries 12dp underneath it.
-        item {
-            Card(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp)
-            ) {
-                ArrowPreference(
-                    title = stringResource(R.string.donate_title),
-                    summary = stringResource(R.string.donate_home_summary),
-                    startAction = {
-                        Icon(
-                            modifier = Modifier
-                                .padding(end = 12.dp)
-                                .size(28.dp),
-                            imageVector = Icons.Rounded.Favorite,
-                            // Fixed rather than themed: the heart is the whole signal here, and
-                            // in the dynamic-colour scheme it would otherwise take whatever
-                            // colour the wallpaper happened to give it.
-                            tint = Color(0xFFF2545B),
-                            contentDescription = null,
-                        )
-                    },
-                    onClick = {
-                        context.startActivity(Intent(context, DonateActivity::class.java))
-                    },
-                )
-            }
-        }
+        // The donate card that used to close this page - a heart, a "the module is free" line and
+        // a page of payment codes behind it - is gone (2026-09-27). The device list above is the
+        // last thing here, and the page's own status card is where a request to support the
+        // project would have belonged anyway.
     }
 }
 

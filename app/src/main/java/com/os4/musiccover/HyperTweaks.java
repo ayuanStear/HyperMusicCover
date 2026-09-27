@@ -132,9 +132,13 @@ final class HyperTweaks {
         thirdPartyWallpaperDepth(cl);
         softGlassTheme(cl);
         softGlassPlugin(cl, "systemui");
+        // The island's classes are the plugin's as well, so the same early attempt is made for
+        // them; the watch below is what usually lands.
+        IslandLength.install(cl);
         // Nothing found from SystemUI's own loader, which is the normal case: wait for the
-        // plugin's loader to be built.
-        if (!sPluginHooked) watchForPlugin();
+        // plugin's loader to be built - and keep watching while either of the two things that
+        // arrive with it is still unhooked.
+        if (!sPluginHooked || !IslandLength.installed()) watchForPlugin();
         clockColon(cl, "systemui", () -> sForceColon);
         mediaBarGlow(cl, () -> sBarGlow);
     }
@@ -788,6 +792,9 @@ final class HyperTweaks {
      */
     private static volatile boolean sPluginHooked;
 
+    /** The loader watch itself, which now carries the super island's hooks as well. */
+    private static volatile boolean sWatchInstalled;
+
     /**
      * The control centre plugin is a second APK with a class loader of its own, built inside
      * SystemUI long after this module's hooks go in - and it never arrives as a package of its
@@ -802,15 +809,22 @@ final class HyperTweaks {
      * in the body below does nothing but read a flag.
      */
     private static void watchForPlugin() {
+        if (sWatchInstalled) return;
+        sWatchInstalled = true;
         try {
             Class<?> base = Class.forName("dalvik.system.BaseDexClassLoader");
             for (Constructor<?> ctor : base.getDeclaredConstructors()) {
                 ctor.setAccessible(true);
                 Xp.hook(ctor, chain -> {
                     Object result = chain.proceed();
-                    if (!sPluginHooked) {
-                        Object loader = chain.getThisObject();
-                        if (loader instanceof ClassLoader) {
+                    Object loader = chain.getThisObject();
+                    if (loader instanceof ClassLoader) {
+                        // The super island's length is hooked from the same arrival, and for the
+                        // same reason - its classes are in that loader and in no parent of ours.
+                        // It has a flag of its own, so this is tried until it lands rather than
+                        // until the glass hooks do.
+                        IslandLength.install((ClassLoader) loader);
+                        if (!sPluginHooked) {
                             softGlassPlugin((ClassLoader) loader, "plugin");
                         }
                     }

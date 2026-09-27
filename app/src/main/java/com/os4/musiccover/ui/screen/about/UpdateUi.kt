@@ -38,8 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.os4.musiccover.BuildConfig
 import com.os4.musiccover.R
-import com.os4.musiccover.ui.util.openQqGroup
-import com.os4.musiccover.ui.util.openTelegramGroup
 import com.os4.musiccover.updater.InstallOutcome
 import com.os4.musiccover.updater.UpdateApi
 import com.os4.musiccover.updater.UpdateCheck
@@ -61,11 +59,8 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 
 private const val POLL_MS = 200L
 
-/** Where the links dialog sends people. The QQ pair is the group's number and its share link. */
+/** Where the links dialog sends people: the releases page, the one address this app asks for. */
 private const val RELEASES_PAGE = "https://github.com/zyl6932/HyperMusicCover/releases"
-private const val TELEGRAM_GROUP = "https://t.me/HyperMusicCover"
-private const val QQ_GROUP_UIN = "392493127"
-private const val QQ_GROUP_LINK = "https://qm.qq.com/q/RcLbYXgBy2"
 
 /**
  * Every piece of state the updater needs.
@@ -463,10 +458,14 @@ private fun UpdateNotesDialog(
     }
 }
 
-/** Where to get it by hand, kept as InstallerX Revived has it: links out, and nothing about this build. */
+/**
+ * Where to get it by hand, kept as InstallerX Revived has it: links out, and nothing about this
+ * build. GitHub alone, and the row is still called by the string the page's first row uses - the
+ * Telegram group and the QQ group that used to sit beside it were removed with the rest of the
+ * page's links (2026-09-27), and the releases page is the git address that is left.
+ */
 @Composable
 private fun UpdateLinksDialog(show: Boolean, onDismiss: () -> Unit) {
-    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     WindowDialog(
         show = show,
@@ -480,24 +479,6 @@ private fun UpdateLinksDialog(show: Boolean, onDismiss: () -> Unit) {
                     title = "GitHub",
                     onClick = {
                         uriHandler.openUri(RELEASES_PAGE)
-                        dismiss?.invoke()
-                    },
-                )
-                BasicComponent(
-                    title = stringResource(R.string.about_telegram),
-                    onClick = {
-                        if (!context.openTelegramGroup(TELEGRAM_GROUP)) {
-                            uriHandler.openUri(TELEGRAM_GROUP)
-                        }
-                        dismiss?.invoke()
-                    },
-                )
-                BasicComponent(
-                    title = stringResource(R.string.about_qq_group),
-                    onClick = {
-                        if (!context.openQqGroup(QQ_GROUP_UIN)) {
-                            uriHandler.openUri(QQ_GROUP_LINK)
-                        }
                         dismiss?.invoke()
                     },
                 )

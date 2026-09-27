@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.edit
 import com.os4.musiccover.CoverActivity
+import com.os4.musiccover.IslandActivity
 import com.os4.musiccover.ModuleBridge
 import com.os4.musiccover.R
 import com.os4.musiccover.ShadeActivity
@@ -126,6 +127,19 @@ private fun FeatureList(
                         title = stringResource(R.string.features_mini_title),
                         summary = stringResource(R.string.features_mini_summary),
                         onClick = { onOpen(MiniPlayerActivity::class.java) },
+                    )
+                }
+                // Its own card, and its own screen, because it is not the same island: the card
+                // above sizes the module's pill in the keyguard's shortcut row, this one sizes
+                // the pill the system itself puts at the top of the screen while something is
+                // playing. Asked for as a row of its own (2026-09-27).
+                Card(
+                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                ) {
+                    ArrowPreference(
+                        title = stringResource(R.string.features_island_title),
+                        summary = stringResource(R.string.features_island_summary),
+                        onClick = { onOpen(IslandActivity::class.java) },
                     )
                 }
             }

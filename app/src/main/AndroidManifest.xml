@@ -2,12 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-        The About page opens QQ and Telegram on their own deep links, and both are probed with
-        resolveActivity first, which package visibility would otherwise answer with null. The
-        tg scheme entry covers every Telegram client; the three packages cover QQ, TIM and QQ
-        International, which is all openQqGroup ever aims at.
-    -->
-    <!--
         The self-updater. INTERNET is install-time and never prompted. There is deliberately no
         REQUEST_INSTALL_PACKAGES: this app does not install anything itself any more, it hands the
         downloaded APK to an installer app, and the permission that matters is that app's.
@@ -20,13 +14,6 @@
              lookup throws NameNotFound even when the package is there. -->
         <package android:name="com.lidesheng.lyricinfo" />
         <package android:name="com.lidesheng.lyricinfo.lite" />
-        <package android:name="com.tencent.mobileqq" />
-        <package android:name="com.tencent.tim" />
-        <package android:name="com.tencent.mobileqqi" />
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="tg" />
-        </intent>
         <!--
             The APK intent, so the updater can tell a device with no installer at all apart from
             one that took the file. No installer is named: which app handles this is the user's
@@ -129,6 +116,13 @@
             android:label="@string/features_mini_title"
             android:theme="@style/Theme.HyperMusicCover" />
 
+        <!-- The Xiaomi super island's length: the system's own island, not the module's pill. -->
+        <activity
+            android:name=".IslandActivity"
+            android:exported="false"
+            android:label="@string/features_island_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
         <!-- The theme settings, opened from the settings page's interface section. Declared like
              every other sub-screen above: an Activity, so the platform supplies the transition
              and the back handling - gesture, button and predictive back - rather than the
@@ -137,13 +131,6 @@
             android:name=".ThemeActivity"
             android:exported="false"
             android:label="@string/settings_theme"
-            android:theme="@style/Theme.HyperMusicCover" />
-
-        <!-- The payment codes, opened from the home page's donate card. -->
-        <activity
-            android:name=".DonateActivity"
-            android:exported="false"
-            android:label="@string/donate_title"
             android:theme="@style/Theme.HyperMusicCover" />
 
         <!--
