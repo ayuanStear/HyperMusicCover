@@ -88,8 +88,28 @@ internal class ShortcutDisc(context: Context) : FrameLayout(context) {
         placeElement()
         invalidateOutline()
         element.invalidateOutline()
+        applyEdgeMask()
         // A material applied before there was a size draws nothing; it goes on again now.
         if (first && w > 1 && h > 1) applyDress()
+    }
+
+    /** The disc's edge, drawn rather than cut by the outline clip. See [EdgeMask]. */
+    private var edgeShader: android.graphics.RuntimeShader? = null
+    private var maskedW = -1
+    private var maskedH = -1
+    private var maskedDx = Int.MIN_VALUE
+
+    private fun applyEdgeMask() {
+        if (shapeW <= 1 || shapeH <= 1 || width <= 1 || height <= 1) return
+        if (shapeW == maskedW && shapeH == maskedH && shapeDx == maskedDx) return
+        maskedW = shapeW
+        maskedH = shapeH
+        maskedDx = shapeDx
+        val shader = edgeShader ?: (EdgeMask.shader() ?: return).also { edgeShader = it }
+        val l = ((width - shapeW) / 2 + shapeDx).toFloat()
+        val t = ((height - shapeH) / 2).toFloat()
+        EdgeMask.apply(this, shader, l, t, l + shapeW, t + shapeH,
+            min(shapeW, shapeH) / 2f)
     }
 
     /**

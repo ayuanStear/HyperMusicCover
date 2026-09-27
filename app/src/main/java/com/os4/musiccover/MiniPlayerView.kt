@@ -30,6 +30,55 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import org.json.JSONObject
 
+/**
+ * A capsule's edge drawn rather than clipped - the pill's and the shortcuts' alike.
+ *
+ * A view's outline clip is a hard clip: every pixel outside the shape is dropped whole, so
+ * along a curve the last row of pixels forms a staircase. On the lock screen's capsule and the
+ * two discs beside it that reads as a jagged edge on the round ends (reported 2026-09-27, and
+ * measured: the material went from 104,130,186 inside to 77,88,101 outside in a single pixel).
+ *
+ * This draws the same shape as a signed distance per pixel and fades the material out over the
+ * last [EDGE_FADE_PX] of it, so the boundary blends into the wallpaper. It goes on the view that
+ * IS the blur container - the pill, or a disc's frame - because that is where the glass the eye
+ * sees at the edge is drawn; masking the material element alone left the boundary as hard as the
+ * clip. The content inside is well away from it, and the outline clip still cuts everything the
+ * fade has already taken to zero.
+ */
+internal object EdgeMask {
+    /** How far inside the shape the fade runs, in pixels. Two is smooth and still crisp. */
+    private const val EDGE_FADE_PX = 2.0f
+
+    private const val AGSL = """
+uniform shader content;
+uniform float4 rect;
+uniform float radius;
+half4 main(float2 p) {
+    float2 c = (rect.xy + rect.zw) * 0.5;
+    float2 h = (rect.zw - rect.xy) * 0.5;
+    float2 q = abs(p - c) - (h - radius);
+    float sd = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    return content.eval(p) * clamp(-sd / FADE, 0.0, 1.0);
+}
+"""
+
+    /** One shader per view that needs one; null when this build has no AGSL runtime shaders. */
+    fun shader(): android.graphics.RuntimeShader? =
+        runCatching {
+            android.graphics.RuntimeShader(AGSL.replace("FADE", EDGE_FADE_PX.toString()))
+        }.onFailure {
+            Xp.log("MCMini: edge mask unavailable, the outline clip stands: $it")
+        }.getOrNull()
+
+    fun apply(view: View, shader: android.graphics.RuntimeShader,
+              l: Float, t: Float, r: Float, b: Float, radius: Float) {
+        shader.setFloatUniform("rect", l, t, r, b)
+        shader.setFloatUniform("radius", radius)
+        view.setRenderEffect(
+            android.graphics.RenderEffect.createRuntimeShaderEffect(shader, "content"))
+    }
+}
+
 /** HyperChanger's compact card, hosted in SystemUI's shortcut area. */
 internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     private var materialLayer = ImageView(context)
@@ -558,6 +607,29 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (!morphing && w > 1 && h > 1 && (oldw <= 1 || oldh <= 1)) materialAgain?.invoke()
+        applyEdgeMask()
+    }
+
+    /** The material's edge, drawn by [EDGE_MASK_AGSL] rather than cut by the outline clip. */
+    private var edgeShader: android.graphics.RuntimeShader? = null
+    private var maskedW = -1
+    private var maskedH = -1
+    private var maskedR = Float.NaN
+
+    private fun applyEdgeMask() {
+        val w = materialLayer.width
+        val h = materialLayer.height
+        if (w <= 1 || h <= 1) return
+        val r = (if (morphing) morphRadius else h / 2f).coerceIn(0f, min(w, h) / 2f)
+        if (w == maskedW && h == maskedH && r == maskedR) return
+        maskedW = w
+        maskedH = h
+        maskedR = r
+        val shader = edgeShader ?: (EdgeMask.shader() ?: return).also { edgeShader = it }
+        // On the container rather than on the material: the pill is the blur container (see
+        // MiniPlayerRuntime.material), so the glass the eye sees at the edge is the container's
+        // own backdrop - masking the element alone left the boundary as hard as the clip.
+        EdgeMask.apply(this, shader, 0f, 0f, w.toFloat(), h.toFloat(), r)
     }
 
     private fun finish() {
@@ -720,6 +792,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             invalidateOutline()
             materialLayer.invalidateOutline()
         }
+        if (resized || rounded) applyEdgeMask()
     }
 
     /** The artwork's corner in its own pixels while it is scaled onto the card's. */
@@ -752,6 +825,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         requestLayout()
         invalidateOutline()
         materialLayer.invalidateOutline()
+        applyEdgeMask()
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
