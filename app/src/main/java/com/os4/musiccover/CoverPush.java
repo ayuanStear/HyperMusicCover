@@ -1345,6 +1345,7 @@ final class CoverPush {
                 Main.sCtTries = attempt + 1;
                 Main.sCtArt = android.os.SystemClock.uptimeMillis();
                 pushArtToWallpaper(ctx, true, art);
+                Main.refreshCardArt(art);
             }
         }, attempt == 0 ? 0L : ART_RETRY_MS);
     }

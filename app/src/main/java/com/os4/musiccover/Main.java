@@ -8579,6 +8579,80 @@ public class Main extends XposedModule {
         }
     }
 
+    /**
+     * Writes the settled track's title and artist straight onto the card's own text views.
+     *
+     * freshenMediaData() only gets its chance when MIUI publishes card data, and a player can
+     * move the session along without MIUI publishing anything behind it - then the card sat on
+     * the old song until MIUI caught up on its own clock, which for Soda Music is tens of
+     * seconds. This is the same authority applied at the other end: the moment a track change
+     * settles, the views are told. The session must agree with what settled - the same guard
+     * freshenMediaData uses - so a card that is genuinely ahead of the session is never dragged
+     * backwards by its own lagging session.
+     *
+     * Writes are conditional on the text actually differing: setText requests a layout, and
+     * this can run on every settle of a metadata storm.
+     */
+    private static void refreshCardText() {
+        MediaController w = sWatched;
+        if (w == null || !sCoverMode || !sameTrack(trackKey(w), sTrackKey)) return;
+        MediaMetadata m = w.getMetadata();
+        if (m == null) return;
+        String title = m.getString(MediaMetadata.METADATA_KEY_TITLE);
+        String artist = m.getString(MediaMetadata.METADATA_KEY_ARTIST);
+        boolean wrote = false;
+        if (title != null && sCardTitle instanceof android.widget.TextView) {
+            android.widget.TextView tv = (android.widget.TextView) sCardTitle;
+            if (!title.contentEquals(tv.getText())) {
+                tv.setText(title);
+                wrote = true;
+            }
+        }
+        if (artist != null && sCardArtist instanceof android.widget.TextView) {
+            android.widget.TextView av = (android.widget.TextView) sCardArtist;
+            if (!artist.contentEquals(av.getText())) {
+                av.setText(artist);
+                wrote = true;
+            }
+        }
+        if (wrote) Xp.log(TAG + "card text <- session: " + title + " / " + artist);
+    }
+
+    /**
+     * Hands the cover the wallpaper just took to the card's own artwork view.
+     *
+     * The card's thumbnail is MIUI's too, and it lags exactly as the text does. Called from the
+     * push pipeline once the art has survived the stale check - so this is the confirmed-fresh
+     * copy, not the previous album the session still carried a beat after the skip. MIUI's own
+     * rebind overwrites it when the card catches up, which is welcome: its copy is the
+     * processed one.
+     */
+    static void refreshCardArt(final Bitmap art) {
+        if (art == null) return;
+        main().post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    View anchor = sCardArt != null ? sCardArt : sContainer;
+                    if (anchor == null) return;
+                    int id = anchor.getResources()
+                            .getIdentifier("album_art_image", "id", "com.android.systemui");
+                    View v = id == 0 ? null : anchor.getRootView().findViewById(id);
+                    if (v instanceof ImageView) {
+                        ImageView iv = (ImageView) v;
+                        Drawable d = iv.getDrawable();
+                        if (d instanceof BitmapDrawable && ((BitmapDrawable) d).getBitmap() == art) {
+                            return;
+                        }
+                        iv.setImageBitmap(art);
+                    }
+                } catch (Throwable t) {
+                    Xp.log(TAG + "card art refresh failed: " + t);
+                }
+            }
+        });
+    }
+
     private static void onCardChanged(Object mediaData) {
         sCardKnown = true;
         boolean showing = mediaData != null;
@@ -9086,13 +9160,12 @@ public class Main extends XposedModule {
             // The card can stand still on a track the session has already left. A player that
             // rewrites its media notification long after the session moved on - Soda Music
             // measured at 30s and more with the screen off - keeps the card key naming the old
-            // song through skip after skip, and this early return was what kept the cover on the
-            // previous album until the card caught up, or the next lock rebuilt it. Between the
-            // two witnesses the session is the fresh one: its metadata is what the player edits
-            // first. So when the card says "same track" but the session names a different one,
-            // believe the session and fall through with its key - albumArt() reads the session
-            // first, so the art is as up to date as the trigger, and the retry budget below
-            // still covers a player that fills its own bitmap in late.
+            // song through skip after skip. Between the two witnesses the session is the fresh
+            // one: its metadata is what the player edits first. So when the card says "same
+            // track" but the session names a different one, believe the session and fall
+            // through with its key - albumArt() reads the session first, so the art is as up to
+            // date as the trigger, and the retry budget below still covers a player that fills
+            // its own bitmap in late.
             String sessionKey = trackKey(sWatched);
             if (sessionKey.isEmpty() || sameTrack(sessionKey, sTrackKey)) {
                 // The lyric is not so sure. A provider module cannot write its lyric until the
@@ -9110,8 +9183,18 @@ public class Main extends XposedModule {
                 return;
             }
             key = sessionKey;
+        } else if (sCoverMode && !sTrackKey.isEmpty()) {
+            // The mirror case: the card is behind the track already settled on, and no publish
+            // has carried the new one yet. Taking the card's word here is what walked sTrackKey
+            // back to the old song between the session's report and MIUI's catch-up (logged
+            // 2026-09-27: a feed player three tracks in a minute), re-pushing covers the
+            // wallpaper already had. The session decides which side is stale - when it agrees
+            // with what was settled, hold that line and let the card come to it.
+            String sessionKey = trackKey(sWatched);
+            if (!sessionKey.isEmpty() && sameTrack(sessionKey, sTrackKey)) return;
         }
         sTrackKey = key;
+        refreshCardText();
         long ctNow = android.os.SystemClock.uptimeMillis();
         // Still waiting on the artwork for the previous one means this press lands on top of it:
         // same burst, and the clock keeps running from where it started.
