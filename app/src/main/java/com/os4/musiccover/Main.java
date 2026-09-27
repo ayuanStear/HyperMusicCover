@@ -2018,6 +2018,15 @@ public class Main extends XposedModule {
         }
         sReceiverRegistered = true;
         sAppCtx = ctx;
+        // The keyguard read its notifications before this ran - this is the module's first
+        // Context, and the first reading is what it had to work with until now. See
+        // LockIslands.onContextReady: everything read then had no app name and no icon, and is
+        // read again from here so a notification does not stay named after its package.
+        try {
+            LockIslands.INSTANCE.onContextReady();
+        } catch (Throwable t) {
+            Xp.log(TAG + "island context hand-off failed: " + t);
+        }
 
         BroadcastReceiver r = new BroadcastReceiver() {
             @Override

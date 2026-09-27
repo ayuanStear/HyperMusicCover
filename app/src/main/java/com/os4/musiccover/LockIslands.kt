@@ -219,13 +219,23 @@ internal object LockIslands {
             (if (it.focus) "F:" else "") + (if (it.redacted) "R:" else "") + it.pkg +
                 (if (!it.focus || it.redacted) "<${it.iconFrom}>" else "") +
                 "[${it.property}/${it.priority}${if (it.order) "/o" else ""} " +
-                "t=-${(System.currentTimeMillis() - it.since) / 1000}s]" +
+                "t=-${(System.currentTimeMillis() - it.since) / 1000}s " +
+                // Every note's own two lines, not just a focus one's: "the row is showing the
+                // package name" is a report about these two strings, and without them the answer
+                // is a guess. Truncated - the probe is read on a phone.
+                "'${it.title.take(24)}'/'${it.text.take(24)}']" +
                 (if (it.focus && !it.redacted) "{${it.timer?.let { t -> "timer ${t.type} ${t.text()} " } ?: ""}" +
-                    "'${it.title.take(20)}'/'${it.text.take(20)}' icon=${it.icon?.javaClass?.simpleName}<${it.iconFrom}> " +
+                    "icon=${it.icon?.javaClass?.simpleName}<${it.iconFrom}> " +
                     "anim=${it.anim?.let { a -> "${a.src}/${a.autoplay}/row=${a.row.get() != null}" }} " +
                     (it.live?.let { l -> "live=${l.id} " } ?: "") +
                     "btn=${it.buttons.joinToString("/") { b -> "${b.index}:t${b.type}:${b.iconName}" }}}" else "")
-        } + if (creationUnreadable) " creation=unreadable" else ""
+        } + if (creationUnreadable) " creation=unreadable" else "" +
+            // Everything the last locked run read, row or member alike. The row shows one note at
+            // a time, so a report about a notification that is inside the stack island - "its
+            // name is the package and it has no icon" - cannot be answered from `notes` alone.
+            " read=" + lastRead.values.joinToString(",") {
+                it.pkg + "<" + it.iconFrom + ">'" + it.title.take(16) + "'"
+            }
 
     fun addListener(listener: () -> Unit) {
         listeners.addIfAbsent(listener)
@@ -335,6 +345,21 @@ internal object LockIslands {
         traced("MC li.invalidate $reason") {
             runCatching { Xp.callMethod(f, "invalidateList", "MusicCover: $reason") }
         }
+    }
+
+    /**
+     * The module has a Context now: drop everything read before that and have the keyguard read
+     * it again.
+     *
+     * The keyguard's own reading of what its stack shows runs before the clock container
+     * attaches, and attaching is what gives Main its context - so the notes of that first run can
+     * only be built from nothing: no app name (the package name stands in) and no picture. They
+     * are not cached (see read()), and this makes the row ask again, so the notification comes
+     * back with its name and its icon within a frame instead of staying wrong for its whole life.
+     */
+    fun onContextReady() {
+        readCache.clear()
+        invalidate("context ready")
     }
 
     /**
@@ -607,10 +632,18 @@ internal object LockIslands {
         val n = sbn.notification ?: return null
         val stamp = (sbn.postTime * 31 + n.`when`) * 2 + if (redacted) 1 else 0
         readCache[sbn.key]?.let { (at, note) -> if (at == stamp) return note }
-        return readFresh(sbn, n, redacted, createdAt(entry, sbn), entry)?.also {
+        val note = readFresh(sbn, n, redacted, createdAt(entry, sbn), entry)
+        // Not cached while the module has no Context yet. The keyguard reads its notifications
+        // BEFORE the clock container attaches, and attaching is what gives Main one - so those
+        // first notes have no app name (the package name stands in) and no picture at all, and
+        // cached they stayed like that for the notification's whole life. That is what the user
+        // saw: a new notification named after its package, with the icon missing. Uncached, the
+        // run that follows the context - and every run after it - reads them again.
+        if (note != null && Main.sAppCtx != null) {
             if (readCache.size > 200) readCache.clear()
-            readCache[sbn.key] = stamp to it
+            readCache[sbn.key] = stamp to note
         }
+        return note
     }
 
     /**
@@ -1173,10 +1206,37 @@ internal object LockIslands {
         n.getLargeIcon()?.takeIf { !redacted || n !== sbn.notification }?.let { icon ->
             runCatching { icon.loadDrawable(ctx) }.getOrNull()?.let { lastIconFrom = "large"; return it }
         }
+        // A sender whose package declares no icon of its own has nothing to draw from the app
+        // side: every path in SystemUI's own applyAppIconAllowCustom - and its first choice,
+        // `android`'s own application label working the same way - resolves to the platform's
+        // blank placeholder, which is why a system notification came up with no visible icon.
+        // The notification's own small icon is a real picture, is public (the status bar draws
+        // it) and is always there, so it is preferred over the placeholder for those senders.
+        if (noAppIcon(n)) {
+            smallIcon(n, ctx)?.let { lastIconFrom = "small"; return it }
+        }
         rowAppIcon(sbn, ctx)?.let { lastIconFrom = "row-app"; return it }
         lastIconFrom = "app"
-        return runCatching { ctx.packageManager.getApplicationIcon(sbn.packageName) }.getOrNull()
+        return runCatching { ctx.packageManager.getApplicationIcon(sbn.packageName) }
+            .getOrNull()
+            ?: smallIcon(n, ctx)?.also { lastIconFrom = "small" }
     }
+
+    /**
+     * Whether the notification says the package it came from declares no icon of its own.
+     *
+     * Read off the notification's own extras rather than by asking the PackageManager: the
+     * ApplicationInfo the sender attached for its own row is the same one SystemUI resolves,
+     * and icon == 0 is exactly the case the platform's blank placeholder is used for.
+     */
+    private fun noAppIcon(n: Notification): Boolean = runCatching {
+        (n.extras.getParcelable("android.appInfo") as? android.content.pm.ApplicationInfo)
+            ?.icon == 0
+    }.getOrDefault(false)
+
+    /** The notification's small icon - the status bar's picture, and the one every sender has. */
+    private fun smallIcon(n: Notification, ctx: Context): Drawable? =
+        runCatching { n.getSmallIcon()?.loadDrawable(ctx) }.getOrNull()
 
     /** Where the last [iconOf] found its picture, for `op mini`. */
     private var lastIconFrom = "app"
@@ -1206,10 +1266,34 @@ internal object LockIslands {
     private var appIconUnreadable = false
     private const val NOTIF_IMAGE_UTIL = "com.android.systemui.statusbar.notification.utils.NotifImageUtil"
 
-    private fun appLabel(pkg: String): CharSequence = runCatching {
-        val pm = Main.sAppCtx!!.packageManager
-        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0))
-    }.getOrDefault(pkg)
+    /**
+     * A notification's app name, for the title line of one that carries no title of its own.
+     *
+     * The package name is the last resort and it is a poor one - it is what the user sees where
+     * an app's name should be - so it is reported once per package, with the reason that made it
+     * necessary, instead of being handed out silently. That is the line to look for the next time
+     * a notification is named after its package: it says which package and why.
+     */
+    private fun appLabel(pkg: String): CharSequence {
+        // No Context is not a package that cannot be read: it is this module not being ready for
+        // the question yet (see read()). Said apart so the log says which of the two it was.
+        val ctx = Main.sAppCtx ?: return fallbackLabel(pkg, "no context yet")
+        val pm = ctx.packageManager
+        return runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)) }
+            .getOrElse { fallbackLabel(pkg, it.toString()) }
+    }
+
+    /** The package name as an app name, reported once per package with the reason it was needed. */
+    private fun fallbackLabel(pkg: String, why: String): CharSequence {
+        if (labelFallbacks.add(pkg)) {
+            Xp.log("MCIsland: no app name for $pkg, showing the package name: $why")
+        }
+        return pkg
+    }
+
+    /** Packages already reported for [appLabel], so one bad lookup is one log line. */
+    private val labelFallbacks =
+        java.util.Collections.synchronizedSet(HashSet<String>())
 
     /**
      * The line a redacted row shows for its content: SystemUI's own notification_hidden_text
