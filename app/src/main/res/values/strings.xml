@@ -172,6 +172,10 @@
     <string name="fp_sink_system">跟随系统</string>
     <string name="fp_sink_always">始终下沉</string>
     <string name="fp_sink_never">不下沉</string>
+    <string name="fp_sink_px">下沉距离</string>
+    <!-- px, not dp: the value is added to a pixel bound SystemUI computed for this screen, and
+         that is what makes it comparable with the numbers in the notes. -->
+    <string name="fp_sink_px_summary">在「始终下沉」的基础上再下移的像素</string>
     <string name="get_update">获取更新</string>
     <string name="get_update_detail">检查软件更新和新功能</string>
     <string name="update_available">有可用更新：%1$s</string>

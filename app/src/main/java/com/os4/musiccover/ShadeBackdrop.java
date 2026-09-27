@@ -120,7 +120,7 @@ final class ShadeBackdrop {
         sPending = frame;
         final Renderer r = sRenderer;
         if (r != null) r.requestUpload();
-        if (!sHasArt) UI.post(HIDE_NOW);
+        if (!sHasArt) UI.post(FADE_AWAY);
     }
 
     static boolean hasArt() {
@@ -165,6 +165,28 @@ final class ShadeBackdrop {
         @Override
         public void run() {
             if (!sShowing) hide();
+        }
+    };
+
+    /**
+     * The cover has been dropped while the shade is open: fade what is on screen away and then
+     * take the window down.
+     *
+     * The upload above only makes the NEXT drawn frame transparent, and with the panel sitting
+     * still nothing draws another frame - expansion is reported per frame of movement and never
+     * on its own. Without this the last opaque frame stayed on the surface until the user moved
+     * the panel again, which reads exactly as "the effect did not retreat". HIDE_NOW is the
+     * master switch's, which has no frame worth fading.
+     */
+    private static final Runnable FADE_AWAY = new Runnable() {
+        @Override
+        public void run() {
+            if (!sShowing) return;
+            sShowing = false;
+            sAlpha = 0f;
+            if (sRenderer != null) sRenderer.setRunning(false);
+            UI.removeCallbacks(HIDE_NOW);
+            UI.postDelayed(HIDE_NOW, LINGER_MS);
         }
     };
 

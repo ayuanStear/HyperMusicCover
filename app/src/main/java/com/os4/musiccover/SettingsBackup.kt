@@ -50,6 +50,8 @@ object SettingsBackup {
     private const val KEY_LYRIC_SIZE = "lyricMainSizeSp"
     private const val KEY_LYRIC_WEIGHT = "lyricMainWeight"
     private const val KEY_FP_AVOID = "fingerprintAvoid"
+    /** The manual sink distance that goes with [KEY_FP_AVOID]; absent in older backups. */
+    private const val KEY_FP_SINK_PX = "fingerprintSinkPx"
     /** The whole notification-shade page, as one object keyed the way the module names them. */
     private const val KEY_SHADE = "shade"
     private const val KEY_MINI = "lockscreenMiniPlayer"
@@ -86,6 +88,7 @@ object SettingsBackup {
             json.put(KEY_LYRIC_SIZE, module.lyricSizeSp.toDouble())
             json.put(KEY_LYRIC_WEIGHT, module.lyricWeight)
             json.put(KEY_FP_AVOID, module.fpAvoid)
+            json.put(KEY_FP_SINK_PX, module.fpSinkPx)
             // Written whole rather than key by key, because the map is built from the module's
             // own list of keys - this file has no idea what is in it, which is the point.
             if (module.shade.isNotEmpty()) {
@@ -184,7 +187,17 @@ object SettingsBackup {
                 ModuleBridge.setLyricStyle(context, "weight", obj.getDouble(KEY_LYRIC_WEIGHT).toFloat())
             }
             if (obj.has(KEY_FP_AVOID)) {
-                ModuleBridge.setFingerprintAvoid(context, obj.getInt(KEY_FP_AVOID))
+                // Both together when the file has both, so the mode and the pixels it applies to
+                // land as one change; an old file has only the mode and keeps the pixels.
+                if (obj.has(KEY_FP_SINK_PX)) {
+                    ModuleBridge.setFingerprintAvoidSink(
+                        context,
+                        obj.getInt(KEY_FP_AVOID),
+                        obj.getInt(KEY_FP_SINK_PX),
+                    )
+                } else {
+                    ModuleBridge.setFingerprintAvoid(context, obj.getInt(KEY_FP_AVOID))
+                }
             }
             // EVERY key in the object, not a chosen few. A restore that puts back some of the
             // shade page and leaves the rest at whatever this device happened to have is worse

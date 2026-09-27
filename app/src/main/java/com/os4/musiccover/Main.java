@@ -73,6 +73,13 @@ public class Main extends XposedModule {
     private static final String CLS_CLOCK_VIEW_TYPE = "com.miui.clock.module.ClockViewType";
     private static final String CLS_MEDIA_CARD = "com.android.systemui.statusbar.notification"
             + ".mediacontrol.MiuiMediaNotificationControllerImpl";
+    /**
+     * The card's transport buttons. Their play/pause icon is deliberately held back for up to two
+     * seconds after a skip - see the hook in install() - and that hold is what the setting below
+     * the sink mode is about.
+     */
+    private static final String CLS_MEDIA_BUTTONS = "com.android.systemui.statusbar.notification"
+            + ".mediacontrol.MiuiMediaActionButtonUtils";
     private static final String CLS_KG_WALLPAPER_MANAGER =
             "com.android.keyguard.wallpaper.MiuiKeyguardWallPaperManager";
     /**
@@ -543,6 +550,25 @@ public class Main extends XposedModule {
      * different things - stop reserving the space, or reserve it even with no print enrolled.
      */
     private static volatile int sFpAvoid;
+    /**
+     * How far below its own bound the notification stack is put, in pixels, while the sink mode
+     * is "always sink". Added to the Y the OEM's own combine produced, so 0 is exactly the stock
+     * look and larger numbers let the stack run further down the screen. Only consulted in mode 1
+     * - the setting is off in the other two modes, where the position is the OEM's to pick.
+     */
+    private static volatile int sFpSinkPx;
+    /** The widest extra sink the module will act on, in pixels. */
+    private static final int FP_SINK_PX_MAX = 300;
+    /** Rate limit for the two probes that say the settings above are being applied. */
+    private static long sPlayFreeAt, sSinkLogAt;
+    /** The artwork field last compared, and whether it needed the session's copy. See cardArtNeeds. */
+    private static volatile Object sArtChecked;
+    private static volatile Bitmap sArtCheckedSrc;
+    private static volatile boolean sArtCheckedNeeds;
+
+    private static int clampSinkPx(int v) {
+        return v < 0 ? 0 : Math.min(v, FP_SINK_PX_MAX);
+    }
     /**
      * Every fingerprint icon view built since SystemUI started, weakly held. The alpha is set at
      * construction, but the switch can move afterwards, and a hidden icon has to be able to come
@@ -1340,6 +1366,7 @@ public class Main extends XposedModule {
                         + " - fingerprint avoidance cannot be overridden");
             } else {
                 Xp.hook(invoke, chain -> {
+                    Object[] args = null;
                     if (sFpAvoid != 0) {
                         try {
                             java.util.List<Object> a = chain.getArgs();
@@ -1358,10 +1385,22 @@ public class Main extends XposedModule {
                                     vals[6] = forced;
                                 }
                             }
+                            // The manual distance only exists for "always sink": with the pair
+                            // forced false above the OEM takes its non-avoid branch, and the Y
+                            // that comes out of it is the one the setting moves. Wrapped rather
+                            // than patched after the fact because the value is built inside the
+                            // lambda and handed straight to the collector.
+                            if (sFpAvoid == 1 && sFpSinkPx != 0 && !a.isEmpty() && a.get(0) != null) {
+                                Object wrapped = sinkCollector(a.get(0), sFpSinkPx, cl);
+                                if (wrapped != null) {
+                                    args = a.toArray(new Object[0]);
+                                    args[0] = wrapped;
+                                }
+                            }
                         } catch (Throwable ignored) {
                         }
                     }
-                    return chain.proceed();
+                    return args == null ? chain.proceed() : chain.proceed(args);
                 });
                 Xp.log(TAG + "fingerprint avoidance hooked on " + combine.getName()
                         + " in " + (android.os.SystemClock.uptimeMillis() - t0) + "ms");
@@ -1405,6 +1444,42 @@ public class Main extends XposedModule {
             Xp.log(TAG + "media card hooked");
         } catch (Throwable t) {
             Xp.log(TAG + "media card hook failed: " + t);
+        }
+
+        // A skip holds the play/pause icon back for two seconds - MiuiMediaActionButtonUtils
+        // measures 2000ms from the prev/next touch and defers the rebind until then, so a card
+        // that was paused and skipped stays on "play" long after the new track is playing. The
+        // hold exists so a stuttering player cannot flip the icon twice mid-flip, and that
+        // reason goes away the moment the session itself says where it is: PLAYING or PAUSED is
+        // settled, and the icon can be bound at once. Anything else - SKIPPING, BUFFERING - is
+        // left alone, so the guard still covers the window it was written for.
+        try {
+            Class<?> buttons = Xp.findClass(CLS_MEDIA_BUTTONS, cl);
+            Xp.hookAll(buttons, "setSemanticButton", chain -> {
+                if (settledPlayback()) {
+                    Object self = chain.getThisObject();
+                    java.util.List<Object> a = chain.getArgs();
+                    Object play = a.isEmpty() ? null : Xp.getObjectField(self, "play");
+                    if (play != null && a.get(0) == play) {
+                        // Both halves: cancelPlayClickTimeout drops a job already scheduled by an
+                        // earlier rebind, and the zeroed touch time stops this rebind from
+                        // scheduling the next one.
+                        try {
+                            Xp.callMethod(self, "cancelPlayClickTimeout");
+                        } catch (Throwable ignored) {
+                        }
+                        Xp.setObjectField(self, "prevNextTouchTime", Long.valueOf(0L));
+                        if (android.os.SystemClock.uptimeMillis() - sPlayFreeAt > 1000L) {
+                            sPlayFreeAt = android.os.SystemClock.uptimeMillis();
+                            Xp.log(TAG + "play/pause button freed from its skip delay, state settled");
+                        }
+                    }
+                }
+                return chain.proceed();
+            });
+            Xp.log(TAG + "media action buttons hooked");
+        } catch (Throwable t) {
+            Xp.log(TAG + "media action buttons hook failed, the play button keeps its delay: " + t);
         }
 
         // A tap on the cover puts the wallpaper back.
@@ -1776,6 +1851,7 @@ public class Main extends XposedModule {
                     // is not.
                     + "\nsawlyric=" + (LockLyrics.sSawSessionLyric ? 1 : 0)
                     + "\nfpavoid=" + sFpAvoid
+                    + "\nfpsinkpx=" + sFpSinkPx
                     + "\nminicfg=" + android.util.Base64.encodeToString(
                             MiniPlayerRuntime.configJson(sAppCtx).getBytes(java.nio.charset.StandardCharsets.UTF_8),
                             android.util.Base64.NO_WRAP)
@@ -1891,6 +1967,7 @@ public class Main extends XposedModule {
                             LockLyrics.sSawSessionLyric = "1".equals(v);
                         }
                         else if ("fpavoid".equals(k)) sFpAvoid = Integer.parseInt(v);
+                        else if ("fpsinkpx".equals(k)) sFpSinkPx = clampSinkPx(Integer.parseInt(v));
                         else if ("minicfg".equals(k)) MiniPlayerRuntime.applyConfig(sAppCtx,
                                 new String(android.util.Base64.decode(v, android.util.Base64.DEFAULT),
                                         java.nio.charset.StandardCharsets.UTF_8));
@@ -2389,11 +2466,15 @@ public class Main extends XposedModule {
                                 + " (full-screen AOD now: " + fullAodOn() + ")");
                     } else if ("fpavoid".equals(op)) {
                         sFpAvoid = i.getIntExtra("mode", 0);
+                        // Absent means "leave the pixels alone": the old app only ever sent the
+                        // mode, and a restore of an older backup must not zero the distance.
+                        if (i.hasExtra("px")) sFpSinkPx = clampSinkPx(i.getIntExtra("px", 0));
                         saveState();
                         // Nothing to re-apply: the bound is recomputed when one of the seven
                         // flows changes and this flag is not one of them, so it lands on the
                         // next recompute - in practice the next time the screen goes off.
                         Xp.log(TAG + "fingerprint avoid mode=" + sFpAvoid
+                                + " sink=" + sFpSinkPx + "px"
                                 + " (applies on the next recompute)");
                     } else if ("fadewp".equals(op)) {
                         sFadeWp = i.getBooleanExtra("on", !sFadeWp);
@@ -2606,6 +2687,7 @@ public class Main extends XposedModule {
                         out.putBoolean("sessionlyric", LockLyrics.sSawSessionLyric
                                 || LyricSource.hasLyricInfo(sWatched));
                         out.putInt("fpavoid", sFpAvoid);
+                        out.putInt("sinkpx", sFpSinkPx);
                         // Everything the app's preview needs to be to scale. It draws a lock
                         // screen it cannot see, and every one of these is device-specific, so
                         // they are measured here rather than written down twice.
@@ -6702,6 +6784,75 @@ public class Main extends XposedModule {
     }
 
     /**
+     * The combine's collector, with the manual sink distance added to everything it carries.
+     *
+     * The Y the setting moves is built and emitted inside the lambda the hook above sits on, so
+     * there is no moment after proceed() at which to change it: the lambda has already handed the
+     * Triple to its collector by then. Wrapping the collector puts the change on the one path the
+     * value takes, and leaves the seven flows, the OEM's arithmetic and the branch choice exactly
+     * as they were.
+     *
+     * A Proxy rather than a subclass because FlowCollector is an interface of the app's own
+     * loader and the real collector is whatever coroutine operator sits next in the chain - a
+     * wrapper class of ours could not implement it, and would not want to own its behaviour
+     * anyway. Everything except emit is forwarded untouched, so the collector's identity checks
+     * downstream still see the same object graph.
+     */
+    private static Object sinkCollector(final Object real, final int px, ClassLoader cl) {
+        try {
+            final Class<?> fc = Xp.findClass("kotlinx.coroutines.flow.FlowCollector", cl);
+            if (fc == null || !fc.isInterface()) return null;
+            return java.lang.reflect.Proxy.newProxyInstance(
+                    real.getClass().getClassLoader(), new Class<?>[]{fc},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] a)
+                                throws Throwable {
+                            if (a != null && a.length == 2 && "emit".equals(m.getName())) {
+                                a[0] = sinkShift(a[0], px);
+                            }
+                            try {
+                                return m.invoke(real, a);
+                            } catch (java.lang.reflect.InvocationTargetException e) {
+                                throw e.getCause() == null ? e : e.getCause();
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            Xp.log(TAG + "sink offset collector failed, the pixel setting is ignored: " + t);
+            return null;
+        }
+    }
+
+    /**
+     * One Triple with its Y moved by px. Read and rebuilt by signature rather than against
+     * kotlin.Triple: the class belongs to the app's own stdlib, this module is Java, and the
+     * shape - getFirst/getSecond/getThird plus a three-argument constructor - is what the
+     * consumer actually depends on. A value that is not that shape is passed through, so a
+     * build whose combine emits something else keeps working, just without the offset.
+     */
+    private static Object sinkShift(Object o, int px) {
+        if (o == null) return null;
+        try {
+            Object second = Xp.callMethod(o, "getSecond");
+            if (!(second instanceof Number)) return o;
+            java.lang.reflect.Constructor<?> ctor =
+                    o.getClass().getConstructor(Object.class, Object.class, Object.class);
+            ctor.setAccessible(true);
+            int from = ((Number) second).intValue();
+            int to = from + px;
+            if (android.os.SystemClock.uptimeMillis() - sSinkLogAt > 1000L) {
+                sSinkLogAt = android.os.SystemClock.uptimeMillis();
+                Xp.log(TAG + "notification sink " + from + " -> " + to + "px (manual " + px + ")");
+            }
+            return ctor.newInstance(Xp.callMethod(o, "getFirst"), Integer.valueOf(to),
+                    Xp.callMethod(o, "getThird"));
+        } catch (Throwable t) {
+            return o;
+        }
+    }
+
+    /**
      * Is this drawable one of the fingerprint ring's frames?
      *
      * Asked by resource name rather than against a list of ids: ids are assigned per build, so a
@@ -8559,23 +8710,65 @@ public class Main extends XposedModule {
             if (artist == null) return;
             String song = (String) Xp.getObjectField(mediaData, "song");
             String curArtist = (String) Xp.getObjectField(mediaData, "artist");
-            if (title.equals(song) && artist.equals(curArtist)) return;
-            Xp.setObjectField(mediaData, "song", title);
-            Xp.setObjectField(mediaData, "artist", artist);
-            Xp.log(TAG + "card data <- session: " + title + " / " + artist);
+            if (!title.equals(song) || !artist.equals(curArtist)) {
+                Xp.setObjectField(mediaData, "song", title);
+                Xp.setObjectField(mediaData, "artist", artist);
+                Xp.log(TAG + "card data <- session: " + title + " / " + artist);
+            }
             Bitmap art = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
             if (art == null) art = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
             if (art == null && m.getDescription() != null) art = m.getDescription().getIconBitmap();
-            if (art != null) {
-                Xp.setObjectField(mediaData, "artwork", art);
-                try {
-                    Xp.setObjectField(mediaData, "artworkIcon",
-                            android.graphics.drawable.Icon.createWithBitmap(art));
-                } catch (Throwable ignored) {
-                }
+            // MediaData.artwork is an Icon, not a Bitmap. Writing the raw bitmap threw, the
+            // stamp stopped there, and the card then bound MIUI's own lagging copy - which is
+            // the thumbnail that sat on the old album while the wallpaper had moved on. The
+            // text is stamped on its own so a track whose title and artist already match still
+            // gets the artwork refreshed.
+            if (art != null && cardArtNeeds(mediaData, art)) {
+                Xp.setObjectField(mediaData, "artwork",
+                        android.graphics.drawable.Icon.createWithBitmap(art));
+                Xp.log(TAG + "card data art <- session " + art.getWidth() + "x" + art.getHeight());
             }
         } catch (Throwable t) {
             Xp.log(TAG + "card data refresh failed: " + t);
+        }
+    }
+
+    /**
+     * Whether MediaData's artwork field is not already this picture.
+     *
+     * Asked before writing because the field is read back by MIUI's own rebind and the compare
+     * is what keeps a caught-up card from being rewritten on every publish. Same-track covers
+     * come back as different Bitmap instances often enough - a new Icon per notification - so
+     * identity alone would call every publish a change; the 8x8 print is the same cheap answer
+     * CoverPush uses for its own stale-art test.
+     */
+    private static boolean cardArtNeeds(Object mediaData, Bitmap art) {
+        try {
+            Object cur = Xp.getObjectField(mediaData, "artwork");
+            // The card re-publishes a couple of times a second, and on a given track both sides
+            // of the comparison are the same two instances every time - MIUI's Icon and the
+            // session's bitmap. Remembering the pair keeps the work below, two 8x8 scalings, off
+            // the main thread for all of those. Both halves are in the key: the same Icon outliving
+            // a track change, and the same track's artwork being replaced, both have to miss it.
+            if (cur != null && cur == sArtChecked && art == sArtCheckedSrc) {
+                return sArtCheckedNeeds;
+            }
+            // getBitmap() is a hidden API: called by reflection the way the OEM calls it, so the
+            // module compiles against the public SDK and still reads the picture back.
+            Object got = cur == null ? null : Xp.callMethod(cur, "getBitmap");
+            boolean needs;
+            if (!(got instanceof Bitmap)) {
+                needs = true;
+            } else {
+                Bitmap b = (Bitmap) got;
+                needs = b != art && CoverPush.artPrint(b) != CoverPush.artPrint(art);
+            }
+            sArtChecked = cur;
+            sArtCheckedSrc = art;
+            sArtCheckedNeeds = needs;
+            return needs;
+        } catch (Throwable t) {
+            return true;
         }
     }
 
@@ -8637,20 +8830,44 @@ public class Main extends XposedModule {
                     if (anchor == null) return;
                     int id = anchor.getResources()
                             .getIdentifier("album_art_image", "id", "com.android.systemui");
-                    View v = id == 0 ? null : anchor.getRootView().findViewById(id);
-                    if (v instanceof ImageView) {
-                        ImageView iv = (ImageView) v;
-                        Drawable d = iv.getDrawable();
-                        if (d instanceof BitmapDrawable && ((BitmapDrawable) d).getBitmap() == art) {
-                            return;
-                        }
-                        iv.setImageBitmap(art);
+                    if (id == 0) {
+                        Xp.log(TAG + "card art refresh: no album_art_image id in this build");
+                        return;
+                    }
+                    if (writeArt(anchor.getRootView(), id, art) == 0) {
+                        Xp.log(TAG + "card art refresh: no album_art_image on screen");
                     }
                 } catch (Throwable t) {
                     Xp.log(TAG + "card art refresh failed: " + t);
                 }
             }
         });
+    }
+
+    /**
+     * Writes the cover to every album_art_image in the tree, and answers how many there were.
+     *
+     * Every one rather than the first because that id is carried by more than one holder - the
+     * lock screen's card, the control centre's copy of it and the media island all inflate the
+     * same layout - and findViewById() hands back whichever happens to come first in the tree,
+     * which is not necessarily the one being looked at. Writing the same picture to the others
+     * changes nothing visible.
+     */
+    private static int writeArt(View v, int id, Bitmap art) {
+        int n = 0;
+        if (v.getId() == id && v instanceof ImageView) {
+            ImageView iv = (ImageView) v;
+            Drawable d = iv.getDrawable();
+            if (!(d instanceof BitmapDrawable) || ((BitmapDrawable) d).getBitmap() != art) {
+                iv.setImageBitmap(art);
+            }
+            n++;
+        }
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) n += writeArt(g.getChildAt(i), id, art);
+        }
+        return n;
     }
 
     private static void onCardChanged(Object mediaData) {
@@ -8727,12 +8944,19 @@ public class Main extends XposedModule {
             // exist without a session behind it - and it is the same evidence
             // releaseUnobservedCover() acts on. A list that cannot be read proves nothing either
             // way and leaves the decision standing; so does a list that still has something in it.
-            if (sTapSuppressed) {
-                List<MediaController> sessions = activeSessions();
-                if (sessions != null && sessions.isEmpty()) {
-                    sTapSuppressed = false;
-                    Xp.log(TAG + "no session left: the tapped-away cover is forgotten");
-                }
+            List<MediaController> sessions = activeSessions();
+            boolean musicEnded = sessions != null && sessions.isEmpty();
+            if (sTapSuppressed && musicEnded) {
+                sTapSuppressed = false;
+                Xp.log(TAG + "no session left: the tapped-away cover is forgotten");
+            }
+            // The shade's flowing cover outlives cover mode on purpose when the setting says to
+            // keep it - that is about the MUSIC still being loaded: a paused track, an unlock, a
+            // card put away for a moment. Once there is no session at all there is nothing left
+            // to keep, and the control centre goes back to the system's own background. Without
+            // this, closing the song left the flow behind it for good.
+            if (musicEnded) {
+                ShadeLayer.forgetArt();
             }
             if (sCoverMode) {
                 Xp.log(TAG + "media card dismissed, leaving cover mode");
@@ -8780,6 +9004,17 @@ public class Main extends XposedModule {
             Xp.log(TAG + "active session read failed: " + t);
             return null;
         }
+    }
+
+    /**
+     * Whether any media session is still loaded - the complement of the empty-list proof the
+     * card-gone path acts on. Answers true when the list could not be read, so "cannot tell"
+     * never takes a cover away on its own; only a real empty list does. Read by the shade's
+     * keep-the-cover rule, which is what makes "keep" mean "while the music is still there".
+     */
+    static boolean musicAlive() {
+        List<MediaController> sessions = activeSessions();
+        return sessions == null || !sessions.isEmpty();
     }
 
     /**
@@ -9059,6 +9294,20 @@ public class Main extends XposedModule {
         if (sCoverCardPlaying == playing) return;
         sCoverCardPlaying = playing;
         CoverCardLayer.playback(playing);
+    }
+
+    /**
+     * Whether the followed session is in a state the card can simply be told, rather than one on
+     * the way somewhere. Read by the play/pause hook: only a settled PLAYING or PAUSED is a fact
+     * worth overriding MIUI's own hold with.
+     */
+    private static boolean settledPlayback() {
+        MediaController w = sWatched;
+        if (w == null) return false;
+        PlaybackState st = w.getPlaybackState();
+        if (st == null) return false;
+        int s = st.getState();
+        return s == PlaybackState.STATE_PLAYING || s == PlaybackState.STATE_PAUSED;
     }
 
     /** Identity of what is on screen, so a metadata storm pushes the same artwork only once. */

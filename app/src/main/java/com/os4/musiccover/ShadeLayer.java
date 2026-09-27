@@ -189,6 +189,19 @@ final class ShadeLayer {
         return sEnabled && sMode == 1;
     }
 
+    /**
+     * Drops the cover regardless of the keep setting, because there is no music left to keep it
+     * for. Called when a session list comes back empty - the module's one proof that the music
+     * ended rather than merely paused - so that closing the song takes the flowing background
+     * with it even in keep mode.
+     */
+    static void forgetArt() {
+        if (!sEnabled) return;
+        if (!ShadeBackdrop.hasArt()) return;
+        Xp.log(TAG + "music ended, the kept cover is dropped");
+        setArt(null);
+    }
+
     /** Drops a cover kept past cover mode once nothing wants it kept. */
     private static void dropIdleArt() {
         if (Main.coverModeOn() || keepsArt()) return;

@@ -819,8 +819,41 @@ private fun CardGroup(
                 ModuleBridge.setFingerprintAvoid(context, it)
             },
         )
+        // Only while the mode is 始终下沉: in the other two the position is the OEM's own answer,
+        // and a distance that moved it would be a second, invisible setting fighting the first.
+        // Its own row in the same card, unfolded the way the lyrics exception is, so the pair
+        // reads as one setting with a value.
+        AnimatedVisibility(
+            visible = avoidIndex == FP_SINK_ALWAYS,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            ValueSlider(
+                title = stringResource(R.string.fp_sink_px),
+                summary = stringResource(R.string.fp_sink_px_summary),
+                value = module.fpSinkPx.coerceIn(0, FP_SINK_PX_MAX).toFloat(),
+                valueRange = 0f..FP_SINK_PX_MAX.toFloat(),
+                enabled = enabled,
+                label = { "${it.roundToInt()} px" },
+                onValueChange = { v ->
+                    val px = v.roundToInt().coerceIn(0, FP_SINK_PX_MAX)
+                    onChange(module.copy(fpSinkPx = px))
+                    ModuleBridge.setFingerprintAvoidSink(context, avoidIndex, px)
+                },
+            )
+        }
     }
 }
+
+/** The "always sink" row of the sink dropdown, which is what unlocks the pixel slider below it. */
+private const val FP_SINK_ALWAYS = 1
+
+/**
+ * The widest extra sink the module accepts, in pixels - FP_SINK_PX_MAX in Main.java. Named here
+ * rather than written at the call site because the slider's range and the module's clamp have to
+ * be the same number for either of them to mean anything.
+ */
+private const val FP_SINK_PX_MAX = 300
 
 /** The date-and-clock offset's range in dp, matching CLOCK_OFFSET_MIN/MAX_DP in the module. */
 private const val CLOCK_OFFSET_MIN_DP = -60f

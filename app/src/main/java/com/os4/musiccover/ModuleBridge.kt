@@ -120,6 +120,12 @@ object ModuleBridge {
         /** 0 system default, 1 never avoid the fingerprint icon, 2 always avoid it. */
         val fpAvoid: Int = 0,
         /**
+         * The manual distance in pixels the notification stack is put below its own bound by,
+         * while [fpAvoid] is 1. Added to what the module's own combine produced, so 0 is the
+         * stock position.
+         */
+        val fpSinkPx: Int = 0,
+        /**
          * The notification-shade settings, keyed exactly as the module's own CFG_KEYS.
          *
          * Read out of the reply by PREFIX rather than field by field. The module generates its
@@ -267,6 +273,19 @@ object ModuleBridge {
 
     fun setFingerprintAvoid(context: Context, mode: Int) =
         send(context, "fpavoid") { putExtra("mode", mode) }
+
+    /**
+     * The sink mode together with the manual distance that goes with it.
+     *
+     * Its own entry point rather than a defaulted argument on the one above, because the absent
+     * distance is meaningful: an import of a backup written before the distance existed sets the
+     * mode and must leave whatever pixels the phone already had alone.
+     */
+    fun setFingerprintAvoidSink(context: Context, mode: Int, sinkPx: Int) =
+        send(context, "fpavoid") {
+            putExtra("mode", mode)
+            putExtra("px", sinkPx)
+        }
 
     /**
      * One shade setting, by the module's own key.
@@ -517,6 +536,7 @@ object ModuleBridge {
             lyricWeight = b.getInt("lyricweight", 600),
             sessionLyric = b.getBoolean("sessionlyric", false),
             fpAvoid = b.getInt("fpavoid", 0),
+            fpSinkPx = b.getInt("sinkpx", 0),
             shade = b.keySet()
                 .filter { it.startsWith("shade_") }
                 .associate { it.removePrefix("shade_") to b.getInt(it, 0) },

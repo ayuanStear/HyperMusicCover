@@ -109,11 +109,14 @@ final class CoverPush {
             // Nothing behind the clock any more, so nothing to take a colour from. The repaint
             // that hands the OEM's own colours back happens with the rest of cover mode.
             Main.sCoverTint = 0;
-            // The shade has nothing to reveal any more - unless it is set to keep the last cover.
+            // The shade has nothing to reveal any more - unless it is set to keep the last cover,
+            // and there is still music to keep it for. "Keep" is about a track that is loaded and
+            // paused, not about a player that has been closed: with no session left the cover goes
+            // even in keep mode, which is what stops the control centre's flow outliving the song.
             // This branch is the single funnel for leaving cover mode - the tap, the dismissed
             // card, the release path and the cover op all end up here - so it is the only place
             // the picture has to be dropped.
-            if (!ShadeLayer.keepsArt()) ShadeLayer.setArt(null);
+            if (!ShadeLayer.keepsArt() || !Main.musicAlive()) ShadeLayer.setArt(null);
             Xp.log(Main.TAG + "pushart off");
             return;
         }
@@ -2023,7 +2026,8 @@ final class CoverPush {
     }
 
     /** Coarse identity of an artwork: enough to tell one cover from another, cheap to take. */
-    private static int artPrint(Bitmap b) {
+    /** The 8x8 average-colour print: identity for "is this the same cover", read by Main too. */
+    static int artPrint(Bitmap b) {
         try {
             Bitmap s = Bitmap.createScaledBitmap(b, 8, 8, true);
             int[] px = new int[64];
