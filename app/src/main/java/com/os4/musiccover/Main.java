@@ -1395,9 +1395,11 @@ public class Main extends XposedModule {
         try {
             Class<?> card = Xp.findClass(CLS_MEDIA_CARD, cl);
             Xp.hookAll(card, "access$setTopMediaData", chain -> {
-                Object result = chain.proceed();
                 java.util.List<Object> args = chain.getArgs();
-                onCardChanged(args.size() > 1 ? args.get(1) : null);
+                Object md = args.size() > 1 ? args.get(1) : null;
+                freshenMediaData(md);
+                Object result = chain.proceed();
+                onCardChanged(md);
                 return result;
             });
             Xp.log(TAG + "media card hooked");
@@ -8514,6 +8516,69 @@ public class Main extends XposedModule {
      * followed by an add, so "gone" is only believed after CARD_GONE_MS - otherwise every skip
      * would tear the wallpaper down and put it straight back.
      */
+    /**
+     * Rewrites the card's incoming data with what the session is actually playing, before MIUI
+     * stores or binds it.
+     *
+     * The card's song and artist ride MIUI's notification pipeline, and a player that updates
+     * its notification late - Soda Music measured at 30s and more with the screen off - leaves
+     * the card naming the previous song long after the cover has moved on. The sub-screen's
+     * media island beats the card at this because it reads the session directly and answers to
+     * nobody; this is the same trick played on the card's own pipeline. Every publish MIUI
+     * makes - including the stale ones, which arrive within a beat of the skip - is stamped
+     * with the settled track's fields first, so the rebind that follows carries the song the
+     * session is playing, and the artwork with it. As a side effect sCardKey, which is read
+     * off this same object, stops flip-flopping between the session's track and the card's
+     * stale one.
+     *
+     * Deliberately narrow. It only speaks when cover mode is on, for the package the watched
+     * session belongs to, and only when the session and sTrackKey agree: without that last
+     * check a lagging session could drag a card MIUI had already caught up back to the old
+     * song. Nothing is written when the publish is already fresh, so a caught-up card costs
+     * one string compare per publish. Anything that throws - a field renamed in a HyperOS
+     * update, a field that refuses writes - is caught once here and leaves the card exactly
+     * as MIUI made it.
+     */
+    private static void freshenMediaData(Object mediaData) {
+        if (mediaData == null || !sCoverMode || sTrackKey.isEmpty()) return;
+        MediaController w = sWatched;
+        if (w == null) return;
+        try {
+            if (!w.getPackageName().equals(Xp.getObjectField(mediaData, "packageName"))) return;
+            MediaMetadata m = w.getMetadata();
+            if (m == null) return;
+            if (!sameTrack(trackKey(w), sTrackKey)) return;
+            String title = m.getString(MediaMetadata.METADATA_KEY_TITLE);
+            if (title == null || title.isEmpty()) return;
+            String artist = m.getString(MediaMetadata.METADATA_KEY_ARTIST);
+            if (artist == null) artist = m.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST);
+            if (artist == null && m.getDescription() != null
+                    && m.getDescription().getSubtitle() != null) {
+                artist = m.getDescription().getSubtitle().toString();
+            }
+            if (artist == null) return;
+            String song = (String) Xp.getObjectField(mediaData, "song");
+            String curArtist = (String) Xp.getObjectField(mediaData, "artist");
+            if (title.equals(song) && artist.equals(curArtist)) return;
+            Xp.setObjectField(mediaData, "song", title);
+            Xp.setObjectField(mediaData, "artist", artist);
+            Xp.log(TAG + "card data <- session: " + title + " / " + artist);
+            Bitmap art = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+            if (art == null) art = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
+            if (art == null && m.getDescription() != null) art = m.getDescription().getIconBitmap();
+            if (art != null) {
+                Xp.setObjectField(mediaData, "artwork", art);
+                try {
+                    Xp.setObjectField(mediaData, "artworkIcon",
+                            android.graphics.drawable.Icon.createWithBitmap(art));
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            Xp.log(TAG + "card data refresh failed: " + t);
+        }
+    }
+
     private static void onCardChanged(Object mediaData) {
         sCardKnown = true;
         boolean showing = mediaData != null;
