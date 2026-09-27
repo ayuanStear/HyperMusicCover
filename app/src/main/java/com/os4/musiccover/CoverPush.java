@@ -1106,13 +1106,16 @@ final class CoverPush {
      * whole of the spring's fade - 387ms at the stock response - so the lock screen sat on the
      * plain wallpaper for the better part of half a second with the art already on this side of
      * the wire (measured: written to the wallpaper at +59ms, and it is a crossfade, not a
-     * movement that has to land with the clock). Half of it, floored at 150ms, is the same fade
-     * the video cover runs and about as long as this reads as a swap rather than a dissolve
-     * (asked for 2026-09-27).
+     * movement that has to land with the clock). A fifth of it, floored at 80ms, is the shortest
+     * that still reads as one picture becoming another rather than a cut - 80ms at the stock
+     * 0.398s response, against the 387 the wallpaper used to be given. The rest of what the eye
+     * waits for is the wallpaper process itself: it composes the full-screen picture on arrival
+     * (41ms measured, a 1220x2656 upload), so the background is written at ~53ms and fully
+     * swapped at ~133ms after the finger lifts (asked for 2026-09-27).
      */
     private static long wallpaperFadeMs() {
         long clockFade = Main.fadeMsFor(Main.sClockResponse);
-        return Math.max(150L, Math.round(clockFade * 0.5f));
+        return Math.max(80L, Math.round(clockFade / 5f));
     }
 
     static void pushFadeMs(Context ctx) {
