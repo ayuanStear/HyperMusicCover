@@ -627,6 +627,40 @@ public class Main extends XposedModule {
     static void noteIslandSystemPx(int px) {
         if (px > 0) sIslandSysPx = px;
     }
+
+    /**
+     * How far above the bottom of its host the lock screen's shortcut row sits, in screen pixels,
+     * as the pill last measured it - 0 before it has ever seen the row laid out.
+     *
+     * A measurement, not a setting, and kept in the state file for the same reason cardrect is: a
+     * SystemUI that has just started has no shortcut row - after a reboot this phone's keyguard
+     * buttons are not laid out at all until the phone is unlocked once - and the pill, which the
+     * module keeps on screen in the doze, has nothing of the row's to sit on. What it falls back
+     * to is this number (MiniPlayerRuntime.rowPlaceY), against the navigation bar plus half the
+     * row before the row has ever been seen.
+     */
+    private static volatile int sPillRowBottomPx;
+
+    /** The shortcut row's height above the bottom of the screen, or 0 for "never measured". */
+    static int pillRowBottomPx() {
+        return sPillRowBottomPx;
+    }
+
+    /**
+     * Where the pill found the row's centre. Called from the placement on every frame the row can
+     * be measured, so only a real move is kept - and written late, the way the card's rectangle
+     * is, because a number that changes twice is not worth two file writes either.
+     */
+    static void notePillRowBottomPx(float px) {
+        int v = Math.round(px);
+        // A row above the middle of the screen is not a row: the placement's own guess could
+        // otherwise teach the next SystemUI start the very place this is here to replace.
+        if (v <= 0 || (sScreenH > 0 && v > sScreenH / 2)) return;
+        if (Math.abs(v - sPillRowBottomPx) < 2) return;
+        sPillRowBottomPx = v;
+        saveStateSoon();
+    }
+
     /**
      * Every fingerprint icon view built since SystemUI started, weakly held. The alpha is set at
      * construction, but the switch can move afterwards, and a hidden icon has to be able to come
@@ -1997,6 +2031,9 @@ public class Main extends XposedModule {
                     // the first frame after a SystemUI restart, instead of only once the phone
                     // has been locked again.
                     + "\ncardrect=" + sCardL + "," + sCardT + "," + sCardW + "," + sCardH
+                    // Another measurement, kept for the same reason: the pill's place on a
+                    // keyguard that has not laid its shortcut row out yet (see sPillRowBottomPx).
+                    + "\npillrow=" + sPillRowBottomPx
                     + "\n").getBytes());
             f.close();
         } catch (Throwable t) {
@@ -2123,6 +2160,13 @@ public class Main extends XposedModule {
                                 sCardL = Integer.parseInt(r[0]); sCardT = Integer.parseInt(r[1]);
                                 sCardW = Integer.parseInt(r[2]); sCardH = Integer.parseInt(r[3]);
                             }
+                        }
+                        // The pill's place, kept to the bottom half of the screen for the same
+                        // reason notePillRowBottomPx will not record one above the middle: a
+                        // value from the placement's old guess would put the pill back there.
+                        else if ("pillrow".equals(k)) {
+                            int px = Integer.parseInt(v);
+                            if (px > 0 && px <= sScreenH / 2) sPillRowBottomPx = px;
                         }
                     } catch (Throwable t) {
                         Xp.log(TAG + "setting unreadable, keeping the default: "

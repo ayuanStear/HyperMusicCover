@@ -1503,7 +1503,7 @@ private class MiniPlayerController(
     private var cachedCover: Bitmap? = null
     private var refreshPosted = false
     private var positionPosted = false
-    /** Passes spent waiting for the shortcut buttons to be laid out before the pill is placed. */
+    /** Passes spent waiting for the host to be measured before the pill is placed. */
     private var restWaits = 0
     private var restWaitSince = 0L
     private var restWaitPosted = false
@@ -1623,6 +1623,11 @@ private class MiniPlayerController(
     private var followRoot: WeakReference<View>? = null
     private var rowHeldOff = false
     private var shortcutRow: WeakReference<View>? = null
+    /**
+     * `keyguard_shortcut_container`: the bottom-anchored row the torch and camera live in, which
+     * is not the same view as [shortcutRow] above - see shortcutRowCentre().
+     */
+    private var buttonRow: WeakReference<View>? = null
 
     /**
      * The torch and camera's motion and fade, on the pill, every frame. The pill hangs off the
@@ -6752,7 +6757,7 @@ private class MiniPlayerController(
         var row: View? = null
         var v: View? = left
         while (v != null && v !== host) {
-            val name = runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
+            val name = idName(v)
             if (name == "keyguard_bottom_area" && row == null) row = v
             if (name == "keyguard_root_view") followRoot = WeakReference(v)
             v = v.parent as? View
@@ -6760,21 +6765,43 @@ private class MiniPlayerController(
         return row ?: left.parent as? View
     }
 
+    /** A view's id as the OEM names it, or null - the one way this class tells views apart. */
+    private fun idName(v: View): String? =
+        runCatching { v.resources.getResourceEntryName(v.id) }.getOrNull()
+
     /**
      * The centre of the row the torch and camera buttons live in, or null when that is not laid
      * out either.
      *
      * The fallback for a placement asked for before the buttons have a size: the buttons sit inside
-     * this row, so its centre is where they are about to be - as opposed to the middle of the
-     * screen, which is where having no answer at all used to put the pill.
+     * this row, so its centre is where they are about to be.
+     *
+     * The row is `keyguard_shortcut_container` - `wrap_content`, `layout_gravity="bottom"` in
+     * keyguard_shortcut_container_layout.xml - and NOT the `keyguard_bottom_area` this used to
+     * answer with. That one is `match_parent` inside the keyguard root (keyguard_bottom_area.xml),
+     * so its centre is the MIDDLE OF THE SCREEN, which is what the pill was placed at on a
+     * keyguard whose buttons had never been laid out: after a reboot it sat in the middle of the
+     * lock screen until the phone was unlocked and locked again, and the placement log named the
+     * row as where that had come from (reported and measured 2026-09-27).
      */
     private fun shortcutRowCentre(): FloatArray? {
-        if (shortcutRow?.get()?.isAttachedToWindow != true) {
-            findRow()?.let { shortcutRow = WeakReference(it) }
+        var row = buttonRow?.get()
+        if (row == null || !row.isAttachedToWindow || row.width <= 0 || row.height <= 0) {
+            row = findButtonRow()
+            buttonRow = row?.let(::WeakReference)
         }
-        val row = shortcutRow?.get() ?: return null
-        if (row.width <= 0 || row.height <= 0) return null
+        if (row == null || row.width <= 0 || row.height <= 0) return null
         return restCentre(row)
+    }
+
+    /** `keyguard_shortcut_container`, by walking up from the torch; null when it is not there. */
+    private fun findButtonRow(): View? {
+        var v: View? = left
+        while (v != null && v !== host) {
+            if (idName(v) == "keyguard_shortcut_container") return v
+            v = v.parent as? View
+        }
+        return null
     }
 
     fun destroy() {
@@ -8351,10 +8378,9 @@ private class MiniPlayerController(
     }
 
     /**
-     * How long position() waits for the shortcut buttons - then for the row they live in - before
-     * it places the pill on a guess. Twelve passes of 100ms covers the gap between a SystemUI
-     * start and the keyguard's shortcut row being measured; past it the old guess stands, so a
-     * phone whose buttons never lay out is exactly where it was before.
+     * How long position() waits for the HOST itself to have a size - the one thing pillRest cannot
+     * answer without, and the one it has no fallback for. Twelve passes of 100ms covers a SystemUI
+     * start, where the window root is built before it is measured.
      */
     private val REST_WAITS = 12
     private val REST_WAIT_MS = 100L
@@ -8367,28 +8393,30 @@ private class MiniPlayerController(
      * layout (position), asked for another row than the one showing: an island landing in the
      * pill is laid out for the row it lands in (fitToPill).
      *
-     * [allowGuess] is what to do while the torch and camera buttons - the two things the pill
-     * sits between - have not been laid out. Their place IS the pill's place, so the honest answer
-     * then is "not yet", which is what position() asks for a few times before allowing the guess:
-     * the first placement after a SystemUI start lands in exactly that gap, and a guess put the
-     * pill in the MIDDLE of the screen and left it there (2026-09-27, reported after a reboot).
+     * Nothing here is a guess any more, which is what the last two rounds of this were about: the
+     * buttons' own midpoint while they are laid out, the row around them when only that is, and
+     * the row's place off the phone's own layout when neither is (rowPlaceY). The old third answer
+     * - the middle of the screen - is where the pill sat on a keyguard whose buttons had never
+     * been laid out (2026-09-27, reported after a reboot), and it is gone.
      */
-    private fun pillRest(small: Boolean, allowGuess: Boolean = true): PillRest? {
+    private fun pillRest(small: Boolean): PillRest? {
         if (host.width <= 0 || host.height <= 0) return null
         // Where the buttons are laid out, not where they are drawn: whatever moves them on top
         // of their layout (the swipe, the doze) reaches the pill through followShortcuts.
         // Taking their drawn place here as well moved the pill twice as far as they went.
         val laidOut = left.width > 0 && right.width > 0 && left.height > 0 && right.height > 0
-        if (!laidOut && !allowGuess) return null
         val l = if (laidOut) restCentre(left) else null
         val r = if (laidOut) restCentre(right) else null
         // The buttons are inside the shortcut row, so its centre is where they are about to be -
-        // a much better guess than the middle of the screen, and the one that covers a pill placed
-        // before they have a size.
+        // the answer for a pill placed before they have a size.
         val row = if (laidOut) null else shortcutRowCentre()
         val centerX = if (l != null && r != null) (l[0] + r[0]) / 2f else host.width / 2f
-        val centerY = if (l != null && r != null) (l[1] + r[1]) / 2f
-            else row?.get(1) ?: (host.height / 2f)
+        // A centre that came off the phone's own layout - the buttons' midpoint, or the row around
+        // them - is also the row's own place, and is kept: it is what the next SystemUI start
+        // places the pill with while nothing of the row has been laid out yet (rowPlaceY).
+        val measuredY = if (l != null && r != null) (l[1] + r[1]) / 2f else row?.get(1)
+        if (measuredY != null) Main.notePillRowBottomPx(host.height - measuredY)
+        val centerY = measuredY ?: rowPlaceY()
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
         val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
@@ -8411,15 +8439,48 @@ private class MiniPlayerController(
         return PillRest(pillWidth, height, centerX, centerY)
     }
 
+    /**
+     * Where the row's centre is when nothing of it has been laid out to say - the answer the
+     * middle of the screen used to be.
+     *
+     * The keyguard's shortcut row is the part of the lock screen a fresh SystemUI start does not
+     * have: after a reboot this phone sits in its always-on display with the keyguard's buttons
+     * never measured, and the pill - which the module keeps on screen there - has nothing to sit
+     * between (measured 2026-09-27: keyguard_bottom_area laid out full screen, the buttons and
+     * their container at zero). So the place comes off the phone's own layout instead of the
+     * screen's middle: the bottom of the screen, less the navigation bar, less half of the row.
+     * On the Xiaomi 17 Pro that is 2656 - 65 - 104 = 2487, which is exactly where the row's centre
+     * measures while it is laid out (the pill's own 2409 + 78 in the trace before the reboot).
+     *
+     * The measured number is preferred, and remembered once the row has been seen: a phone whose
+     * row is somewhere else gets its own answer from the next start on.
+     */
+    private fun rowPlaceY(): Float {
+        val kept = Main.pillRowBottomPx()
+        if (kept > 0) return (host.height - kept).toFloat()
+        return (host.height - navBottomPx() - dp(HALF_ROW_DP)).toFloat()
+    }
+
+    /** The navigation bar's height, from the host's insets; the platform's own resource without. */
+    private fun navBottomPx(): Int {
+        val live = runCatching {
+            host.rootWindowInsets
+                ?.getInsets(android.view.WindowInsets.Type.navigationBars())?.bottom ?: 0
+        }.getOrDefault(0)
+        if (live > 0) return live
+        val res = context.resources
+        val id = res.getIdentifier("navigation_bar_height", "dimen", "android")
+        return if (id > 0) res.getDimensionPixelSize(id) else dp(20f)
+    }
+
     private fun position() {
         val view = player ?: return
         if (view.visibility != View.VISIBLE) return
         val small = smallKey != null
-        val rest = pillRest(small, restWaits >= REST_WAITS) ?: run {
-            // Neither the buttons nor the row they live in is laid out yet - a SystemUI that has
-            // just started, with the pill bound on a track change before the keyguard's shortcut
-            // row has been measured. Ask again instead of placing the pill somewhere it is not:
-            // REST_WAITS passes of this is what keeps it out of the middle of the screen.
+        val rest = pillRest(small) ?: run {
+            // The host itself has no size yet - a SystemUI that has just started, with the pill
+            // bound on a track change before the window root has been measured. Ask again: the
+            // pill's own layout slot is a 1x1 in the corner until something places it.
             restWaits++
             if (restWaitSince == 0L) restWaitSince = android.os.SystemClock.uptimeMillis()
             if (!restWaitPosted) {
@@ -8433,9 +8494,13 @@ private class MiniPlayerController(
         }
         if (restWaits > 0) {
             val waited = android.os.SystemClock.uptimeMillis() - restWaitSince
-            val from = if (left.width > 0 && right.width > 0) "buttons" else "row"
-            Xp.log("MCMini: pill placed after waiting ${waited}ms for the shortcut row" +
-                    " (${from}), ${restWaits} passes")
+            val from = when {
+                left.width > 0 && right.width > 0 -> "the buttons"
+                buttonRow?.get() != null -> "the shortcut row"
+                else -> "the phone's own layout"
+            }
+            Xp.log("MCMini: pill placed after waiting ${waited}ms for the host to be measured" +
+                    " (from $from), ${restWaits} passes")
             restWaits = 0
             restWaitSince = 0L
         }
@@ -8538,6 +8603,9 @@ private class MiniPlayerController(
 
 /** The small island's nudge home: MiniPlayerView's OFFSET_RESPONSE, CoverMorphMotion's damping. */
 private const val SMALL_NUDGE_RESPONSE = 0.32f
+
+/** Half of the shortcut row's own height, in dp: rowPlaceY's default without a measurement. */
+private const val HALF_ROW_DP = 32f
 private const val SMALL_NUDGE_DAMPING = 0.8f
 
 /** How long the pill waits, down, for a scene its morph has just landed into. */
