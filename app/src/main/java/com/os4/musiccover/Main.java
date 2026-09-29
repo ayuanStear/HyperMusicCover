@@ -3011,23 +3011,11 @@ public class Main extends XposedModule {
                         dumpInk();
                     } else if ("mini".equals(op)) {
                         setResultData(MiniPlayerRuntime.describe());
-                    } else if ("trace".equals(op)) {
-                        // 逐帧轨迹：landing 环 + scene 环，--es grep 过滤，--ei n 截断（0 全部）。
-                        setResultData(MiniPlayerRuntime.traceDump(i.getStringExtra("grep"),
-                                i.getIntExtra("n", 0)));
-                    } else if ("geo".equals(op)) {
-                        // 当前各岛的绘制框（胶囊岛/小岛/卡片/移动体），够短可以高频轮询。
-                        setResultData(MiniPlayerRuntime.geometry());
                     } else if ("rowtree".equals(op)) {
                         String key = i.getStringExtra("key");
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));
                     } else if ("fold".equals(op)) {
                         setResultData(describeFold());
-                    } else if ("nscroll".equals(op)) {
-                        // 通知列表自己的滚动位置：下拉是列表的还是通知岛的，这一行说明白。
-                        String s = MiniPlayerRuntime.listScrollProbe();
-                        setResultData(s);
-                        Xp.log(TAG + "nscroll " + s);
                     } else if ("keepawake".equals(op)) {
                         // --ez on true|false: the lock screen held lit for a test run.
                         setResultData(keepAwake(i.getBooleanExtra("on", true)));
@@ -3046,18 +3034,6 @@ public class Main extends XposedModule {
                         MotionTrace.arm(i.getIntExtra("n", 4));
                     } else if ("geomtrace".equals(op)) {
                         startGeomTrace(i.getIntExtra("ms", 4000));
-                    } else if ("pill".equals(op)) {
-                        // Back onto the pill, whatever the screen is showing: the card's choice
-                        // forced to mini and the cover scene left. A probe stand-in for the
-                        // swipe-down that a hand does on the card, for filming a pill tap again.
-                        MiniPlayerRuntime.forceMini();
-                        if (sCoverMode) exitFromTap("probe asked for the pill");
-                        setResultData("pill forced");
-                    } else if ("cardgeom".equals(op)) {
-                        // --ei n 200: the next N morph frames written out with both ends of the
-                        // flight, for a card that jumps on its way to the stack's slot.
-                        MiniCardMorph.setGeomFrames(i.getIntExtra("n", 200));
-                        setResultData("cardgeom armed");
                     } else if ("state".equals(op)) {
                         Xp.log(TAG + "state: holdY=" + sHoldY
                                 + " lastSystemY=" + sLastSystemY + " clock " + ClockCollapse.describe()

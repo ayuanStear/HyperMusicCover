@@ -776,12 +776,6 @@ object MiniPlayerRuntime {
     @JvmStatic fun preferMini() = live().forEach { it.preferMini() }
 
     /**
-     * Back onto the pill, morph included: what the finger's swipe down on the card does, for a
-     * probe that has to film a pill tap again and cannot drag a view by hand.
-     */
-    @JvmStatic fun forceMini() = live().forEach { it.forceMini() }
-
-    /**
      * The card was swiped down out of the cover or the lyrics. The next swipe up on the pill
      * goes back there rather than to the plain card - which of the two is the entry's own
      * question (LockLyrics.willAttachOnEntry keeps a two-finger dismissal), so it lands where
@@ -1285,14 +1279,6 @@ object MiniPlayerRuntime {
     @JvmStatic fun rowTree(match: String): String =
         live().firstOrNull()?.rowTree(match) ?: "no controller"
 
-    /** For the debug op `trace`: the live controllers' frames, landing ring then scene ring. */
-    @JvmStatic fun traceDump(grep: String?, n: Int): String =
-        live().joinToString("\n\n") { it.traceDump(grep, n) }.ifEmpty { "no controller" }
-
-    /** For the debug op `geo`: the islands as they are drawn right now, one short line. */
-    @JvmStatic fun geometry(): String =
-        live().joinToString(" || ") { it.geometry() }.ifEmpty { "no controller" }
-
     /** For `op mini`: the pill, the card, and the torch button's chain as they are right now. */
     @JvmStatic fun describe(): String {
         val sb = StringBuilder("material=$cardEffect calls=${cardRecipe?.size} empty=$emptyEffect " +
@@ -1349,10 +1335,6 @@ object MiniPlayerRuntime {
      */
     @JvmStatic fun pullKeepsForList(dy: Float, slop: Float): Boolean =
         live().any { it.pullKeepsForList(dy, slop) }
-
-    /** For `op nscroll`: 列表自己的滚动读数，这一次下拉归谁就看它。 */
-    @JvmStatic fun listScrollProbe(): String =
-        live().joinToString(" | ") { it.listScrollProbe() }
 
     /**
      * That row folds back into the row of islands, following the finger from [ev] on as the
@@ -3170,10 +3152,13 @@ private class MiniPlayerController(
         if (musicController() == null || noteMorphKey != null || flight != null ||
             exchange != null) return null
         // One morph at a time, and one group. A second one started from inside the first - the
-        // A morph already running is turned round, not refused: upstream's transition aims the one
-        // it has (MiniCardMorph.aim) and the capsule island springs into its card from where it is.
-        // Refusing it here left the switch to happen in place - the card popped in from under the
-        // row instead of springing out of the capsule (2026-09-29).
+        // cover entry answering the suppression the first had just dropped (2026-09-27) - left two
+        // morphs over the same card, the artwork's push dropped as stale, and the card's own title
+        // and artist faded out by one of them and put back by neither.
+        if (morph != null || group != null) {
+            trace("group refused: a ${if (morph != null) "morph" else "group"} is already running")
+            return null
+        }
         if (toNative && selectedIsland != MUSIC_ISLAND && smallKey != MUSIC_ISLAND) return null
         endSwap()
         endRow()
@@ -6450,7 +6435,7 @@ private class MiniPlayerController(
 
     /** 锁屏通知列表自己的滚动量（像素），读不到时为 null。 */
     private fun stackScrollPx(stack: View): Float? {
-        // 这台机器上列表把滚动量记在 mOwnScrollY（2026-09-29 `op nscroll` 读出来的），别的
+        // 这台机器上列表把滚动量记在 mOwnScrollY（真机读出来的），别的
         // 版本叫 mCurrentScrollY 或有个 getCurrentScrollY。一个都读不到的机器上返回 null，
         // 由 listScrolledAway 退回“还能不能往上滚”。
         for (name in SCROLL_FIELDS) (fieldOf(stack, name) as? Number)?.let { return it.toFloat() }
@@ -6466,38 +6451,6 @@ private class MiniPlayerController(
             " scrolledAway=" + listScrolledAway()
     }
 
-    /** For `op nscroll`: 列表的滚动读数，加上列表自己的状态和领头那条。 */
-    fun listScrollProbe(): String {
-        val sb = StringBuilder(listScrollWhy())
-        sb.append(" state=").append(stackState())
-        sb.append(" lead=").append(stackLead()?.let(::shortKey) ?: "-")
-        sb.append(" released=").append(LockIslands.releasedKeys().size)
-        val stack = notificationStack()
-        sb.append(" stack=").append(stack?.javaClass?.simpleName)
-        if (stack != null) {
-            sb.append(" viewScrollY=").append(stack.scrollY)
-            sb.append(" canDown=").append(runCatching { stack.canScrollVertically(1) }.getOrNull())
-            // 类里跟滚动有关的字段全读出来：MIUI 各版本的字段名不一样，一个都读不到就得换办法。
-            var c: Class<*>? = stack.javaClass
-            while (c != null && c != View::class.java) {
-                for (f in c.declaredFields) {
-                    if (!f.name.contains("croll", ignoreCase = true)) continue
-                    val v = runCatching { f.isAccessible = true; f.get(stack) }.getOrNull()
-                    if (v is Number || v is Boolean) {
-                        sb.append(" ").append(c.simpleName).append(".").append(f.name).append("=").append(v)
-                    }
-                }
-                c = c.superclass
-            }
-            val row = stackLead()?.let { findRow(it)?.first }
-            if (row != null) {
-                val xy = IntArray(2).also(row::getLocationOnScreen)
-                sb.append(" leadRow y=").append(xy[1]).append(" top=").append(row.top)
-                    .append(" ty=").append(row.translationY.toInt()).append(" h=").append(row.height)
-            }
-        }
-        return sb.toString()
-    }
 
     /** The lock screen's notification stack, found once in the window. */
     private fun notificationStack(): ViewGroup? {
@@ -7285,8 +7238,6 @@ private class MiniPlayerController(
     private fun trace(what: String) {
         landTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $what")
         while (landTrace.size > 2400) landTrace.removeFirst()
-        // verbose 打开时把轨迹同时写进日志：收起卡住这类问题只能在真机轨迹上看出来。
-        if (Main.verbose()) Xp.log("[MCT] $what")
     }
 
     /** The small island and the row as they stand this frame, in host pixels. */
@@ -7350,56 +7301,6 @@ private class MiniPlayerController(
     }
     fun nativeHeaderHidden(): Boolean = nativeSuppressionRequested
     fun visibleHeightDp(): Float = configuredHeightDp
-
-    /**
-     * The frames this controller has traced, for the debug op `trace`: the landing ring first, then
-     * the scene ring, both filtered by [grep] and cut to their last [n] lines (0 keeps all of it).
-     * `op mini` carries the same rings, but its answer is long enough that the tail - which is
-     * where the frames just filmed are - does not survive the binder reply.
-     */
-    fun traceDump(grep: String?, n: Int): String {
-        val lines = ArrayList<String>(landTrace.size + sceneTrace.size)
-        lines += landTrace
-        lines += sceneTrace
-        val kept = if (grep.isNullOrEmpty()) lines else lines.filter { it.contains(grep) }
-        val cut = if (n > 0) kept.takeLast(n) else kept
-        return cut.joinToString("\n")
-    }
-
-    /**
-     * For the debug op `geo`: where the pill, the small island, the media card and every mover of a
-     * running switch are drawn this frame - short enough to poll every 40ms. `op mini` carries the
-     * same boxes but answers with 250KB, one read outlasting the animation it samples.
-     */
-    fun geometry(): String {
-        val v = player ?: return "no pill"
-        val xy = IntArray(2).also(v::getLocationOnScreen)
-        val sb = StringBuilder("pill v=${v.visibility}@${xy[0]},${xy[1]} ${v.width}x${v.height} " +
-            "ty=${v.translationY.toInt()} sw=${swap?.smallMode ?: -1}")
-        smallIsland?.let { s ->
-            val sx = IntArray(2).also(s::getLocationOnScreen)
-            sb.append(" small v=${s.visibility}@${sx[0]},${sx[1]} ${s.width}x${s.height}")
-        }
-        exchange?.let { x ->
-            x.movers.values.forEach { m ->
-                val mv = m.view
-                val mx = IntArray(2).also(mv::getLocationOnScreen)
-                sb.append(" mv[${m.key.takeLast(6)}]@${mx[0]},${mx[1]} ${mv.width}x${mv.height}" +
-                    " p=${"%.2f".format(m.morph?.progress ?: -1f)}" +
-                    " cardAt=${m.cardAt.toInt()} homeAt=${m.homeAt?.toInt()} settle=${m.settleAt.toInt()}")
-            }
-        }
-        transitionHeader()?.let { h ->
-            val hx = IntArray(2).also(h::getLocationOnScreen)
-            sb.append(" card v=${h.visibility}@${hx[0]},${hx[1]} ${h.width}x${h.height}" +
-                " ty=${h.translationY.toInt()} a=${"%.2f".format(h.alpha)}")
-        }
-        swap?.let { s ->
-            sb.append(" swap from=${s.pillFrom.x.toInt()},${s.pillFrom.y.toInt()}" +
-                " to=${s.pillTo.x.toInt()},${s.pillTo.y.toInt()} v=${"%.2f".format(s.spring.value)}")
-        }
-        return sb.toString()
-    }
 
     fun transitionActive(): Boolean = morph != null
     /**
@@ -7702,11 +7603,6 @@ private class MiniPlayerController(
         controller?.sessionToken?.let { token ->
             MiniPlayerRuntime.chooseMini(token)
         }
-    }
-
-    /** As the choice were made by a swipe down on the card: the pill, with the morph to it. */
-    fun forceMini() {
-        controller?.sessionToken?.let(MiniPlayerRuntime::selectMini)
     }
 
     /**

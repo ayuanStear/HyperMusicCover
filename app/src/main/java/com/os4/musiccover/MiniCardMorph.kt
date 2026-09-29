@@ -436,16 +436,6 @@ internal class MiniCardMorph(
         val towardNative = if (nativeRest.y <= miniRest.y) -1f else 1f
         val box = CoverMorphMotion.Box(framed.x + nudgeX.value * NUDGE_UNIT,
             framed.y + towardNative * nudge.value * NUDGE_UNIT, framed.w, framed.h)
-        if (geomFrames > 0) {
-            geomFrames--
-            Xp.log("MCGEO t=${SystemClock.uptimeMillis() - startedAt} c=${"%.3f".format(c)} " +
-                "mini=${miniRest.y.toInt()}+${miniRest.h.toInt()} " +
-                "nat=${nativeRest.y.toInt()}+${nativeRest.h.toInt()} " +
-                "box=${box.y.toInt()}+${box.h.toInt()} x=${box.x.toInt()}+${box.w.toInt()} " +
-                "ndy=${"%.1f".format(nativeDy?.invoke() ?: 0f)} " +
-                "hdr=${header.top}+${"%.1f".format(header.translationY)} v=${header.visibility} " +
-                "nj=${"%.1f".format(nudge.value * NUDGE_UNIT)}")
-        }
         val radius = lerp(miniRest.h / 2f, nativeRadius, c)
 
         // The card, at the container's width and cut to its height. s is in the card's own
@@ -762,12 +752,6 @@ internal class MiniCardMorph(
     }
 
     companion object {
-        /**
-         * `op cardgeom` counts frames down from here: one morph's flight written out end to end,
-         * both ends and the box between them, for a card that jumps on the way to its slot.
-         */
-        @JvmStatic var geomFrames = 0
-
         /** The most progress per second a let-go hands the spring. */
         private const val MAX_RELEASE_SPEED = 5f
 
