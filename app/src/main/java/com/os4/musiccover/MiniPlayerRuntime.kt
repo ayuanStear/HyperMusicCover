@@ -1509,8 +1509,9 @@ private class MiniPlayerController(
     private var restWaits = 0
     private var restWaitSince = 0L
     private var restWaitPosted = false
-    private var configuredHeightDp = 72f
     private var config = JSONObject(MiniPlayerConfig.defaultJson())
+    /** [config]'s visible pill height, in dp: what the drawing path wants, without a JSON parse. */
+    private var configuredHeightDp = MiniPlayerConfig.visibleHeightDp(config.toString())
     private var forceHeaderRefresh = true
     private var lastPresentationLog = ""
     private var lastActive = false
@@ -4262,6 +4263,8 @@ private class MiniPlayerController(
 
     private var contentTopAt = 0L
     private var contentTop = Float.NaN
+    private val contentTopLoc = IntArray(2)
+    private val contentTopSeen = StringBuilder(64)
 
     /**
      * See the static stackContentTop: every row and card in the stack, at the stack's own target -
@@ -4283,9 +4286,10 @@ private class MiniPlayerController(
             var top = Float.POSITIVE_INFINITY
             var from: View? = null
             var skipped = 0
-            val stackY = IntArray(2).also(stack::getLocationOnScreen)[1]
+            val stackY = contentTopLoc.also(stack::getLocationOnScreen)[1]
             // Every child weighed, for `op mini`: name:target-on-screen/translation and why skipped.
-            val seen = StringBuilder()
+            // The buffer is kept rather than built: this walk runs a frame at a time.
+            contentTopSeen.setLength(0)
             // A card a switch is taking home to its island is the morph's, drawn on its way to the
             // row, not where the stack still has it. The media card going back to the pill for a
             // focus notification was pushed up the stack by the row let out under it, 1700 -> 1425,
@@ -4302,20 +4306,20 @@ private class MiniPlayerController(
                 val name = c.javaClass.name
                 if (!name.contains("ExpandableNotificationRow") && !name.contains("MediaHeader")) continue
                 val t = stackTargetY(c) + c.top
-                seen.append(' ').append(shortName(c)).append(':').append((stackY + t).toInt())
+                contentTopSeen.append(' ').append(shortName(c)).append(':').append((stackY + t).toInt())
                     .append('/').append((stackY + c.top + c.translationY).toInt())
-                if (c in hiddenRows) seen.append('H')
-                if (c.visibility != View.VISIBLE) seen.append('I')
-                if (c.alpha <= 0.01f) seen.append('A')
-                if (pinned?.get() === c) seen.append('P')
+                if (c in hiddenRows) contentTopSeen.append('H')
+                if (c.visibility != View.VISIBLE) contentTopSeen.append('I')
+                if (c.alpha <= 0.01f) contentTopSeen.append('A')
+                if (pinned?.get() === c) contentTopSeen.append('P')
                 val home = leaving.any { isInside(it, c) }
-                if (home) seen.append('L')
+                if (home) contentTopSeen.append('L')
                 // Hidden only while its morph is being made - a tap has sent it out, the row is
                 // there, the morph takes it a frame or two later: it is on its way, and the clock
                 // gives way to where it is going. Skipped, the clock grew for the frame or two
                 // and shrank back on every tap of a run of them (2026-09-26).
                 val coming = c in hiddenRows && rowComingOut(c)
-                if (coming) seen.append('C')
+                if (coming) contentTopSeen.append('C')
                 // The media card the pill stands in for is kept INVISIBLE, still laid out (see
                 // the setVisibility hook in install): the clock gave way to it too (2026-09-26).
                 if (home || c in hiddenRows && !coming || c.visibility != View.VISIBLE ||
@@ -4323,7 +4327,7 @@ private class MiniPlayerController(
                 if (t < top) { top = t; from = c }
             }
             contentTopFrom = (from?.let(::shortName) ?: "-") + " skip=$skipped" +
-                (if (exchange != null) " X" else "") + (if (morph != null) " M" else "") + " [" + seen.toString().trim() + "]"
+                (if (exchange != null) " X" else "") + (if (morph != null) " M" else "") + " [" + contentTopSeen.toString().trim() + "]"
             when {
                 from != null -> stackY + top
                 skipped > 0 -> (stackY + stack.height).toFloat()
@@ -6556,7 +6560,7 @@ private class MiniPlayerController(
     private fun button(side: Int) = if (side == 0) left else right
 
     /** A disc is a circle as tall as the pill. */
-    private fun discDiameter(): Int = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
+    private fun discDiameter(): Int = dp(configuredHeightDp)
 
     /** The disc's frame: room for its widest swelling and squeeze around the circle. */
     private fun discFrame(d: Int): Int = (d * DISC_FRAME).toInt()
@@ -8510,7 +8514,9 @@ private class MiniPlayerController(
         val centerY = measuredY ?: rowPlaceY()
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
-        val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
+        // The height the config reload settled on (refreshUnsafe): this is the drawing path, and
+        // reading it back off the config meant parsing the JSON twice a frame.
+        val height = dp(configuredHeightDp)
         // Clear of the discs, a circle as tall as the pill on each button. Laid out rather than
         // shown: the buttons are put away in the doze, and the pill must not widen for it.
         val width = MiniPlayerGeometry.clearOfDiscsPx(

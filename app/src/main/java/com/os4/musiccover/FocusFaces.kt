@@ -96,8 +96,23 @@ internal class RollingDigits(private val view: TextView) {
 
         fun running(now: Long) = start != 0L && now - start < SETTLE_MS
 
-        private fun width(paint: Paint): Float =
-            if (numeric) (0..9).maxOf { paint.measureText(it.toString()) } else paint.measureText(to.toString())
+        /**
+         * The widest figure, measured once for the paint's size: asked on every measure and every
+         * draw of the span, and the box must not move while one figure changes into another.
+         */
+        private var numW = -1f
+        private var numWAt = -1f
+
+        private fun width(paint: Paint): Float {
+            if (!numeric) return paint.measureText(of(to))
+            if (numWAt != paint.textSize) {
+                numWAt = paint.textSize
+                var w = 0f
+                for (d in 0..9) w = maxOf(w, paint.measureText(DIGITS[d]))
+                numW = w
+            }
+            return numW
+        }
 
         override fun getSize(paint: Paint, text: CharSequence?, s: Int, e: Int, fm: Paint.FontMetricsInt?): Int {
             fm?.let { paint.getFontMetricsInt(it) }
@@ -123,7 +138,7 @@ internal class RollingDigits(private val view: TextView) {
         private fun glyph(canvas: Canvas, c: Char, x: Float, w: Float, y: Float, dy: Float, scale: Float,
                           alpha: Float, paint: Paint) {
             if (alpha <= 0.001f) return
-            val s = c.toString()
+            val s = of(c)
             val cw = paint.measureText(s)
             val keep = paint.alpha
             paint.alpha = (keep * alpha.coerceIn(0f, 1f)).toInt()
@@ -144,6 +159,11 @@ internal class RollingDigits(private val view: TextView) {
         private const val SETTLE_MS = 900L
         private const val DAMPING = 0.75f
         private const val RESPONSE = 0.35f
+
+        /** The figures as strings, kept: measuring and drawing asked for a new one a frame each. */
+        private val DIGITS = Array(10) { (0x30 + it).toChar().toString() }
+
+        private fun of(c: Char): String = if (c in '0'..'9') DIGITS[c - '0'] else c.toString()
 
         /** FolmeEase.spring(0.75, 0.35) from 0 to 1, at [t] seconds: an underdamped spring, solved. */
         fun spring(t: Float): Float {

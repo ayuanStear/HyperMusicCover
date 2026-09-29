@@ -5659,7 +5659,7 @@ public class Main extends XposedModule {
             // last, which follows the stack's list scroll frame by frame and so says jump, the
             // clock cut from one size to the other on every switch between the stack island's
             // list and a card (2026-09-26). Ours is always a change of rows: animated.
-            Object next = triple.getClass().getConstructor(Object.class, Object.class, Object.class)
+            Object next = tripleCtor(triple.getClass())
                     .newInstance(y + sRoomNudge, Boolean.FALSE, Xp.callMethod(triple, "getThird"));
             Xp.callMethod(flow, "setValue", next);
         } catch (Throwable t) {
@@ -5668,6 +5668,21 @@ public class Main extends XposedModule {
     }
 
     private static float sRoomNudge = 0.01f;
+
+    /**
+     * The flow value's three-slot constructor. Asked once a frame of every clock animation, and
+     * getConstructor copies the class's whole public method array each time it is called.
+     */
+    private static volatile Class<?> sTripleCls;
+    private static volatile java.lang.reflect.Constructor<?> sTripleCtor;
+
+    private static java.lang.reflect.Constructor<?> tripleCtor(Class<?> cls) throws NoSuchMethodException {
+        if (cls != sTripleCls || sTripleCtor == null) {
+            sTripleCtor = cls.getConstructor(Object.class, Object.class, Object.class);
+            sTripleCls = cls;
+        }
+        return sTripleCtor;
+    }
 
     /** Prefer the pixels visible in the card; some OEM drawables expose no BitmapDrawable. */
     static Bitmap coverMorphSource() {
