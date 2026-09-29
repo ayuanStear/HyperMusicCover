@@ -1152,18 +1152,22 @@ public class Main extends XposedModule {
         try {
             Class<?> ks = Xp.findClass("com.android.systemui.keyguard.KeyguardService$2", cl);
             Xp.hookAll(ks, "onStartedGoingToSleep", chain -> {
+                long sleepToken = sClockLifecycleGate.onSleepStarted();
                 Object result = chain.proceed();
                 main().post(new Runnable() {
                     @Override
                     public void run() {
-                        CoverMorphLayer.cancel();
-                        if (sCoverMode) ClockCollapse.toAod();
+                        sClockLifecycleGate.runIfCurrentSleep(sleepToken, () -> {
+                            CoverMorphLayer.cancel();
+                            if (sCoverMode) ClockCollapse.toAod();
+                        });
                     }
                 });
                 return result;
             });
             Xp.hookAll(ks, "onStartedWakingUp", chain -> {
-                ClockCollapse.noteWaking();
+                long wakeToken = sClockLifecycleGate.onWakeStarted();
+                ClockCollapse.noteWaking(wakeToken);
                 main().post(new Runnable() {
                     @Override
                     public void run() {
@@ -1174,15 +1178,25 @@ public class Main extends XposedModule {
                 main().post(new Runnable() {
                     @Override
                     public void run() {
-                        if (sCoverMode && ClockCollapse.phase() == ClockCollapse.Phase.AOD
-                                && keyguardShowing()) {
-                            ClockCollapse.enter(true, true, "kg-post");
+                        if (sClockLifecycleGate.isCurrentWake(wakeToken)) {
+                            if (sCoverMode && ClockCollapse.phase() == ClockCollapse.Phase.AOD
+                                    && keyguardShowing()) {
+                                ClockCollapse.enter(true, true, "kg-post");
+                            } else {
+                                // An unlock/home wake has no lock-screen pre-draw to consume
+                                // this token; do not leave the lifecycle stuck in WAKING.
+                                sClockLifecycleGate.acknowledgeWake(wakeToken);
+                            }
                         }
                     }
                 });
                 return result;
             });
+            // Treat the keyguard route as available only when both halves are installed. If the
+            // wake hook is absent, SCREEN_OFF remains an operational fallback.
+            sClockHasSleepHook = true;
         } catch (Throwable t) {
+            sClockHasSleepHook = false;
             Xp.log(TAG + "KeyguardService sleep/wake hooks failed, the clock cuts to and from "
                     + "the AOD: " + t);
         }
@@ -1234,17 +1248,24 @@ public class Main extends XposedModule {
             Xp.hookAll(sContainerCls, "doAnimationToAod", chain -> {
                 Object[] args = chain.getArgs().toArray();
                 boolean toAod = args.length > 0 && Boolean.TRUE.equals(args[0]);
-                if (sCoverMode && toAod) {
+                long sleepToken = toAod ? sClockLifecycleGate.onSleepHandoff() : 0L;
+                if (sCoverMode && toAod && sleepToken != 0L) {
                     // Ahead of the broadcast, which is ~110ms behind: the display is no longer
                     // interactive, and any colour set in between must not get the cover's tint.
-                    sScreenOn = false;
-                    CoverCardLayer.refresh();
-                    sAodGrey = Float.NaN;
-                    ClockCollapse.toAod();
-                    recolorClock();
+                    sClockLifecycleGate.runIfCurrentSleep(sleepToken, () -> {
+                        sScreenOn = false;
+                        CoverCardLayer.refresh();
+                        sAodGrey = Float.NaN;
+                        ClockCollapse.toAod();
+                        recolorClock();
+                    });
                 }
                 Object result = chain.proceed();
                 if (sCoverMode && !toAod && ClockCollapse.leavingOrOff()) {
+                    // This synchronous OEM route is also a wake signal and can race a queued
+                    // keyguard sleep callback when the latter's main-thread work is delayed.
+                    long wakeToken = sClockLifecycleGate.onWakeStarted();
+                    ClockCollapse.noteWaking(wakeToken);
                     forgetSysReads();
                     // Only a wake onto the lock screen. The same call can come with the phone
                     // unlocked, and the clock there is the shade's.
@@ -1254,6 +1275,8 @@ public class Main extends XposedModule {
                         sAodGrey = Float.NaN;
                         ClockCollapse.enter(true, true, "doAnim");
                         recolorClock();
+                    } else {
+                        sClockLifecycleGate.acknowledgeWake(wakeToken);
                     }
                 }
                 return result;
@@ -3086,6 +3109,12 @@ public class Main extends XposedModule {
             @Override
             public void onReceive(Context c, Intent i) {
                 String a = i.getAction();
+                boolean screenOff = Intent.ACTION_SCREEN_OFF.equals(a);
+                long screenOffToken = screenOff
+                        ? sClockLifecycleGate.onScreenOff(sClockHasSleepHook) : 0L;
+                boolean currentScreenOff = screenOffToken != 0L;
+                // A stale SCREEN_OFF must not mutate the clock, but it still carries ordinary
+                // receiver bookkeeping below. It must not make the live display look asleep.
                 // Cached for the per-frame paths, which cannot afford screenOn()'s binder call:
                 // how the clock is inked is a per-frame decision. screenOn() itself stays for the
                 // event-time questions, where it is authoritative.
@@ -3099,8 +3128,11 @@ public class Main extends XposedModule {
                 refreshHideFp();
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
                     sScreenOn = true;
+                    // Also invalidate a queued sleep if this build did not expose the keyguard
+                    // wake callback that normally advances the lifecycle generation.
+                    sClockLifecycleGate.onScreenOnBroadcast();
                     sAodGrey = Float.NaN;
-                } else if (Intent.ACTION_SCREEN_OFF.equals(a)) {
+                } else if (screenOff && currentScreenOff) {
                     sScreenOn = false;
                     sAodGrey = Float.NaN;
                     // Held into a doze, the screen wake lock would pull the phone back out of it.
@@ -3114,7 +3146,7 @@ public class Main extends XposedModule {
                     CoverCardLayer.hideNow();
                 }
                 else CoverCardLayer.refresh();
-                if (Intent.ACTION_SCREEN_OFF.equals(a)) CoverMorphLayer.cancel();
+                if (screenOff && currentScreenOff) CoverMorphLayer.cancel();
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
                     // The wake normally entered already, from the doAnimationToAod hook, before
                     // the first lit frame. This is the fallback for a build without that method.
@@ -3134,7 +3166,14 @@ public class Main extends XposedModule {
                 // this same clock, SystemUI's keyguard in doze - and so does an unlocked phone.
                 // Going off, the sleep hooks have normally started the walk into the AOD already
                 // and this does nothing; it is the fallback for a build without them.
-                if (Intent.ACTION_SCREEN_OFF.equals(a) && sCoverMode) ClockCollapse.toAod();
+                if (screenOff) {
+                    if (currentScreenOff && sCoverMode) {
+                        sClockLifecycleGate.runIfCurrentSleep(screenOffToken,
+                                ClockCollapse::toAod);
+                    } else if (currentScreenOff) {
+                        ClockCollapse.release(a);
+                    }
+                }
                 else ClockCollapse.release(a);
             }
         };
@@ -3155,6 +3194,17 @@ public class Main extends XposedModule {
      * can read.
      */
     private static volatile boolean sScreenOn = true;
+    /** Orders asynchronous keyguard sleep work against wake events from the binder thread. */
+    private static final ClockLifecycleGate sClockLifecycleGate = new ClockLifecycleGate();
+    /** True when the keyguard callback is available, so SCREEN_OFF remains a fallback only. */
+    private static volatile boolean sClockHasSleepHook;
+    static boolean isCurrentClockWake(long token) {
+        return sClockLifecycleGate.isCurrentWake(token);
+    }
+
+    static void acknowledgeClockWake(long token) {
+        sClockLifecycleGate.acknowledgeWake(token);
+    }
 
     /** The cached reading, for LockLyrics' per-frame questions. */
     static boolean screenOnCached() {

@@ -5,6 +5,8 @@ import android.view.Choreographer;
 import android.view.View;
 import android.view.ViewTreeObserver;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * Cover mode's clock: one progress, one owner, one place that writes the views.
  *
@@ -102,11 +104,13 @@ final class ClockCollapse {
     }
 
     /**
-     * Set on the binder thread the moment the keyguard hears it is waking, before the OEM lays
-     * the lock screen out again. The pre-draw of the first lock screen frame reads it, so the
-     * entry starts in the same frame and no frame of the OEM's own full-size clock is drawn.
+     * The keyguard wake token is published on the binder thread before the OEM lays out the lock
+     * screen again. The first lock-screen pre-draw validates it against the current lifecycle, so
+     * a later sleep can invalidate the token without racing a separately cleared boolean.
      */
-    private static volatile boolean sWaking;
+    private static final long NO_WAKE_TOKEN = Long.MIN_VALUE;
+    /** A wake is live only while its lifecycle token is still the newest event. */
+    private static final AtomicLong sWakeToken = new AtomicLong(NO_WAKE_TOKEN);
 
     /** Spring position (0 = where the transition started, 1 = its destination) and velocity. */
     private static float sT = 1f, sTv = 0f;
@@ -366,14 +370,14 @@ final class ClockCollapse {
 
     /** @param src which route took this entry, for the log - see noteEntry. */
     static void enter(boolean animate, boolean wake, String src) {
-        if (!Main.screenOn() && !sWaking) {
+        if (!Main.screenOn() && !isWaking()) {
             // The AOD shows the full clock; the wake brings it in.
             toAod();
             return;
         }
         Phase was = sPhase;
         if (wake) {
-            sWaking = false;
+            consumeWake();
             Main.noteAwake();
         }
         float natural = naturalY();
@@ -457,8 +461,22 @@ final class ClockCollapse {
     }
 
     /** The binder thread heard the keyguard start waking up. */
-    static void noteWaking() {
-        sWaking = true;
+    static void noteWaking(long token) {
+        sWakeToken.accumulateAndGet(token, Math::max);
+    }
+
+    private static boolean isWaking() {
+        long token = sWakeToken.get();
+        return token != NO_WAKE_TOKEN && Main.isCurrentClockWake(token);
+    }
+
+    private static void consumeWake() {
+        long token = sWakeToken.get();
+        if (token != NO_WAKE_TOKEN && Main.isCurrentClockWake(token)) {
+            Main.acknowledgeClockWake(token);
+            // Do not consume a newer wake if one arrived while this entry was being applied.
+            sWakeToken.compareAndSet(token, NO_WAKE_TOKEN);
+        }
     }
 
     /**
@@ -476,7 +494,6 @@ final class ClockCollapse {
      * and place do not, the spring carries those.
      */
     static void toAod() {
-        sWaking = false;
         // The doze about to start has drawn nothing yet, so it has no pose to be steady against.
         clearAodPend();
         // The start pose is read BEFORE the OEM's y goes back: the y changes the OEM's box at
@@ -804,7 +821,7 @@ final class ClockCollapse {
     static String describe() {
         return "phase=" + sPhase + (sExitToAod ? "(to AOD)" : "") + (sAodHeld ? "(held)" : "")
                 + " t=" + Main.r3(sT)
-                + " waking=" + sWaking + " floor=" + Main.r1(sFloor)
+                + " waking=" + isWaking() + " floor=" + Main.r1(sFloor)
                 + " y " + Main.r1(sYFrom) + "->" + Main.r1(sYTo)
                 + " card " + Main.r2(sCardFrom) + "->" + Main.r2(sCardTo)
                 + " glass " + Main.r2(sGlassFrom) + "->" + Main.r2(sGlassTo)
@@ -1764,7 +1781,7 @@ final class ClockCollapse {
         if (!measured) return;
 
         if (phase == Phase.AOD) {
-            if (sWaking && Main.coverModeOn()) {
+            if (isWaking() && Main.coverModeOn()) {
                 // The first lock screen frame of the wake, before it is drawn. Enter now, from the
                 // clock the AOD was showing, and place this very frame.
                 enter(true, true, "predraw");
