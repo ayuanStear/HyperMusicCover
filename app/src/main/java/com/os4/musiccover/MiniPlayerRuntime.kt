@@ -5755,11 +5755,19 @@ private class MiniPlayerController(
         noteMorphKey = key
         flightFromSmall = false
         flightOut = false
-        // Back where it came out of: the pill it was in, or the small island. The music, out
-        // as its card since before any pull, comes back into the pill - the super island's
-        // expanded island folds into its big one.
-        flightHome = if (rowEmpty || key in releasedFromPill ||
-            key == MUSIC_ISLAND && key !in releasedFromSmall) HOME_PILL else HOME_SMALL
+        // 收起落到哪里（用户的规则，2026-09-29）：
+        //  · 音乐胶囊岛在行里 -> 通知统一落到右边的小圆岛（胶囊位留给音乐）；
+        //  · 音乐不在（没有音乐胶囊）-> 才占胶囊位；
+        //  · 音乐岛自己收起时仍按它从哪出来回哪去（从小圆岛出来就回小圆岛）。
+        flightHome = if (key == MUSIC_ISLAND) {
+            if (key in releasedFromSmall) HOME_SMALL else HOME_PILL
+        } else if (MUSIC_ISLAND in islandKeys) {
+            HOME_SMALL
+        } else if (rowEmpty || key in releasedFromPill) {
+            HOME_PILL
+        } else {
+            HOME_SMALL
+        }
         MiniPlayerRuntime.noteTouch("collapse home=${if (flightHome == HOME_PILL) "pill" else "small"} " +
             "empty=$rowEmpty")
         if (rowEmpty) {
