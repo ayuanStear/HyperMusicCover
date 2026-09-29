@@ -776,6 +776,12 @@ object MiniPlayerRuntime {
     @JvmStatic fun preferMini() = live().forEach { it.preferMini() }
 
     /**
+     * Back onto the pill, morph included: what the finger's swipe down on the card does, for a
+     * probe that has to film a pill tap again and cannot drag a view by hand.
+     */
+    @JvmStatic fun forceMini() = live().forEach { it.forceMini() }
+
+    /**
      * The card was swiped down out of the cover or the lyrics. The next swipe up on the pill
      * goes back there rather than to the plain card - which of the two is the entry's own
      * question (LockLyrics.willAttachOnEntry keeps a two-finger dismissal), so it lands where
@@ -1396,6 +1402,10 @@ object MiniPlayerRuntime {
     }
 
     internal fun selectMini(token: Any) {
+        if (live().any { !it.allowsDynamicMusicTarget(toNative = false) }) {
+            Xp.log("MCMini: dynamic mini selection ignored while a music scene entry owns the card")
+            return
+        }
         val changed = synchronized(selectionLock) { sessionSelection.requestMini(token) }
         if (changed) Xp.log("MCMini: dynamic choice -> mini")
         live().forEach { it.beginTransition(toNative = false, scene = false) }
@@ -1498,6 +1508,40 @@ private class MiniPlayerController(
     private var nativeSuppressionRequested = false
     private var morph: MiniCardMorph? = null
     private var morphScene = false
+
+    /** Ownership fence for the current music-card hand-off. */
+    private val musicTransitionOwnership = MusicTransitionOwnership()
+    private var musicTransitionToken: MusicTransitionToken? = null
+
+    private fun beginMusicTransition(scene: Boolean): MusicTransitionToken =
+        musicTransitionOwnership.startEntry(scene).also { musicTransitionToken = it }
+
+    private fun clearMusicEntry(token: MusicTransitionToken?) {
+        musicTransitionOwnership.finish(token)
+        if (musicTransitionToken?.id == token?.id) musicTransitionToken = null
+    }
+
+    private fun ownsMusicTransition(morph: MiniCardMorph): Boolean =
+        morph.ownerToken == null || musicTransitionOwnership.owns(morph.ownerToken)
+
+    /**
+     * The media card may reach its destination before the clock and artwork do. Keep the same
+     * transition alive until those visual layers have handed off too; the clock's ON/OFF phase is
+     * the authoritative endpoint, not the music spring's response setting.
+     */
+    private fun sceneHandoffReady(toNative: Boolean): Boolean = if (toNative) {
+        Main.coverSceneActive() && ClockCollapse.phase() == ClockCollapse.Phase.ON &&
+            !CoverMorphLayer.active()
+    } else {
+        !Main.coverSceneActive() && !CoverMorphLayer.active()
+    }
+
+    /** Dynamic session refreshes may not reverse an owned scene entry. */
+    fun allowsDynamicMusicTarget(toNative: Boolean): Boolean =
+        musicTransitionToken?.let {
+            musicTransitionOwnership.accepts(it, toNative, scene = false)
+        } ?: true
+
     private var artBridged = false
     /** Whether the pill is bound to the music as refresh last bound it, not to a notification. */
     private var pillShowsMusic = false
@@ -3091,16 +3135,18 @@ private class MiniPlayerController(
      * Sets the row up for the media card's morph and makes the music's morph, not started yet:
      * [toNative] the music goes up into the card, else the card comes down into the row.
      */
-    private fun prepareGroup(native: View, toNative: Boolean): MiniCardMorph? {
+    private fun prepareGroup(native: View, toNative: Boolean,
+                              transitionToken: MusicTransitionToken? = null): MiniCardMorph? {
         musicComingDown = !toNative
         try {
-            return prepareGroupUnsafe(native, toNative)
+            return prepareGroupUnsafe(native, toNative, transitionToken)
         } finally {
             musicComingDown = false
         }
     }
 
-    private fun prepareGroupUnsafe(native: View, toNative: Boolean): MiniCardMorph? {
+    private fun prepareGroupUnsafe(native: View, toNative: Boolean,
+                                   transitionToken: MusicTransitionToken? = null): MiniCardMorph? {
         val view = player ?: return null
         if (musicController() == null || noteMorphKey != null || flight != null ||
             exchange != null) return null
@@ -3160,7 +3206,8 @@ private class MiniPlayerController(
             smallIsland?.visibility = View.GONE
         }
         val next = MiniCardMorph(lead, native, toNative, morphListener,
-            restBox = if (g.musicSmall) { { smallBoxOnScreen() } } else null, circle = g.musicSmall)
+            restBox = if (g.musicSmall) { { smallBoxOnScreen() } } else null, circle = g.musicSmall,
+            ownerToken = transitionToken)
         // The other island's row, if the stack has it laid out already: coming down it always
         // has; going up, only if the pull was seen coming (rowsAnticipated). Otherwise the music
         // sets out alone and the other island joins it the moment its row is there (groupFrame).
@@ -4015,7 +4062,8 @@ private class MiniPlayerController(
      * pill as it leaves, and the others make room as it comes back. The pill itself going into
      * the cover, the others stood still and the pill swapped islands in one jump at the end.
      */
-    private fun startSceneFlight(native: View, toNative: Boolean): Boolean {
+    private fun startSceneFlight(native: View, toNative: Boolean,
+                                  transitionToken: MusicTransitionToken? = null): Boolean {
         if (noteMorphKey != null || flight != null || exchange != null) return false
         val view = player?.takeIf { it.visibility == View.VISIBLE } ?: return false
         endSwap()
@@ -4053,7 +4101,7 @@ private class MiniPlayerController(
         updateNativeSuppression(false)
         trace("scene flight ${if (toNative) "in" else "out"} home=${if (flightHome == HOME_PILL) "pill" else "small"} " +
             smallState())
-        if (!startNoteMorph(MUSIC_ISLAND, native, toRow = toNative)) {
+        if (!startNoteMorph(MUSIC_ISLAND, native, toRow = toNative, transitionToken = transitionToken)) {
             morphScene = false
             return false
         }
@@ -4733,6 +4781,7 @@ private class MiniPlayerController(
      */
     private class Mover(val key: String, val view: MiniPlayerView, val native: View) {
         var morph: MiniCardMorph? = null
+        var transitionToken: MusicTransitionToken? = null
         /** Its place in the row, from the seats: where it lands once it is headed home. */
         var place = LAND_PILL
         /** The row end on screen: springs from where it was to a new place, on CHANGE_EASE. */
@@ -4764,6 +4813,7 @@ private class MiniPlayerController(
 
     private class Switch {
         val movers = LinkedHashMap<String, Mover>()
+        var musicSceneToken: MusicTransitionToken? = null
         /** The island out as its card, or on its way there: the last one tapped. */
         var expanded: String? = null
         /** The row as the last tap reseated it. */
@@ -4825,6 +4875,14 @@ private class MiniPlayerController(
      * island stays drawn where it is and the rest goes on as it was.
      */
     private fun requestUp(x: Switch, key: String, fromPill: Boolean, cover: Boolean) {
+        // Who asks, and whether the switch already has a morph for it: an ask that finds one
+        // running goes straight to applyUp, which turns the one out back down again - and that
+        // turn, with the cover on, is what leaves the cover (sendDown). A card that jumps up and
+        // back on a capsule tap is read from this line's caller (filmed 2026-09-29).
+        Xp.log("MC x.ask ${key.takeLast(6)} pill=$fromPill cover=$cover " +
+            "have=${x.movers[key]?.morph != null} pend=${x.pending?.takeLast(6)} " +
+            "out=${x.expanded?.takeLast(6)} by " +
+            Throwable().stackTrace.drop(1).take(5).joinToString("<-") { it.methodName })
         if (x.movers[key]?.morph != null) {
             if (!applyUp(x, key, fromPill, cover)) MiniPlayerRuntime.noteTouch("switch $key: no morph")
             return
@@ -5091,6 +5149,9 @@ private class MiniPlayerController(
         if (outPlace == LAND_HIDDEN) startSmallPulse(seats.small)
         val down = x.movers[out]
         if (down != null) {
+            Xp.log("MC x.turn ${out.takeLast(6)} cover=${down.cover} up=${key.takeLast(6)} " +
+                "p=${"%.2f".format(down.morph?.progress ?: -1f)} card=${down.fromCard} " +
+                "by " + Throwable().stackTrace.drop(1).take(4).joinToString("<-") { it.methodName })
             down.homeAt = null
             down.morph?.aim(false)
             turnTo(out, false)
@@ -5330,6 +5391,13 @@ private class MiniPlayerController(
      * cover's card before (2026-09-25).
      */
     private fun openCover() {
+        // Where the pill stood as the cover was asked for: the entry's morph takes the card from
+        // here, so a twitch of the card on a tap is read back from this line and the frames after
+        // it, rather than guessed from the stack's layout of a frame or two later.
+        MiniPlayerRuntime.noteTouch("open cover morph=${morph != null} group=${group != null} " +
+            "xchg=${exchange?.expanded?.takeLast(6)} note=$noteMorphKey wait=$rowWaitKey " +
+            "hdr=${transitionHeader()?.let { "${it.top}+${it.translationY.toInt()} v=${it.visibility}/" +
+                "%.2f".format(it.alpha) }} " + smallState())
         MiniPlayerRuntime.forgetRestoreScene()
         // A notification still on its way - opening, or springing back out after a pull too
         // short to collapse it - is not "out" yet to expandedKey, and the cover came up over it
@@ -5359,15 +5427,22 @@ private class MiniPlayerController(
             }
             expandedKey()?.let { it != MUSIC_ISLAND } == true -> startExchange(MUSIC_ISLAND, toCover = true)
         }
-        Main.miniPlayerEnterCover()
+        val entered = Main.miniPlayerEnterCover()
         // Tapping the capsule is an explicit choice of the full media card. The cover transition
         // must be started before recording it: beginTransition(scene = true) deliberately skips
         // a transition when the native choice is already set. Once the tap has opened the card,
         // keep that choice across metadata updates and a player session replacement, so changing
         // or pausing the song cannot silently put the user back in the capsule.
-        controller?.sessionToken?.let { token ->
-            MiniPlayerRuntime.chooseNative(token)
-            MiniPlayerRuntime.refresh()
+        //
+        // "Once the tap has opened the card" is the whole condition: a refused entry has opened
+        // nothing, and recording the choice for it is what drew the OEM media header at the top of
+        // the stack for a frame or two with the pill gone under it, before the next refresh took
+        // it back (filmed 2026-09-29, the card jerking up on a tap of the capsule).
+        if (entered) {
+            controller?.sessionToken?.let { token ->
+                MiniPlayerRuntime.chooseNative(token)
+                MiniPlayerRuntime.refresh()
+            }
         }
     }
 
@@ -5786,7 +5861,8 @@ private class MiniPlayerController(
     private fun landingFor(key: String, native: View) =
         if (key == MUSIC_ISLAND) MiniCardMorph.Landing.mediaCard(native) else rowLanding(native)
 
-    private fun startNoteMorph(key: String, row: View, toRow: Boolean): Boolean {
+    private fun startNoteMorph(key: String, row: View, toRow: Boolean,
+                               transitionToken: MusicTransitionToken? = null): Boolean {
         val useFlight = flight != null
         val view = (if (useFlight) flight else player) ?: return false
         val landing = landingFor(key, row)
@@ -5812,7 +5888,8 @@ private class MiniPlayerController(
             }
         val next = MiniCardMorph(view, row, toRow, noteMorphListener(key), landing, restBox,
             circle = useFlight && home == HOME_SMALL,
-            nativeDy = if (toRow) { { settleDy(row, emptyList()) } } else null)
+            nativeDy = if (toRow) { { settleDy(row, emptyList()) } } else null,
+            ownerToken = transitionToken)
         morph = next
         noteSpan = noteDragSpan(row, useFlight && home == HOME_SMALL)
         val drag = noteDrag?.takeIf { it.key == key }
@@ -5864,7 +5941,12 @@ private class MiniPlayerController(
     private fun noteMorphListener(key: String) = object : MiniCardMorph.Listener {
         /** The music out of a scene lands once the cover has let go of the lock screen. */
         override fun canSettle(morph: MiniCardMorph, toNative: Boolean) =
-            key != MUSIC_ISLAND || toNative || !morphScene || !Main.coverSceneActive()
+            isCurrent(morph) && (key != MUSIC_ISLAND || morph.ownerToken?.scene != true ||
+                sceneHandoffReady(toNative))
+
+        override fun isCurrent(morph: MiniCardMorph): Boolean =
+            (this@MiniPlayerController.morph === morph || key != MUSIC_ISLAND) &&
+                (key != MUSIC_ISLAND || ownsMusicTransition(morph))
 
         override fun artBridged() = key == MUSIC_ISLAND && artBridged
 
@@ -5898,11 +5980,16 @@ private class MiniPlayerController(
             if (kotlin.math.abs(f.alpha - a) > 0.002f) f.alpha = a
         }
         override fun onSettled(morph: MiniCardMorph, toNative: Boolean, completed: Boolean) {
+            if (!isCurrent(morph)) return
             flushTurn(key)
             trace("settled toRow=$toNative completed=$completed " +
                 (if (completed) "" else "why=${morph.lastCancel} ") + smallState())
             if (key == STACK_ISLAND) endPile(toNative)
-            if (key == MUSIC_ISLAND) morphScene = false
+            if (key == MUSIC_ISLAND) {
+                morphScene = false
+                musicTransitionOwnership.finish(morph.ownerToken)
+                if (musicTransitionToken?.id == morph.ownerToken?.id) musicTransitionToken = null
+            }
             traceFrames = 30
             Choreographer.getInstance().removeFrameCallback(traceFrame)
             Choreographer.getInstance().postFrameCallback(traceFrame)
@@ -6978,7 +7065,7 @@ private class MiniPlayerController(
 
     private fun trace(what: String) {
         landTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $what")
-        while (landTrace.size > 600) landTrace.removeFirst()
+        while (landTrace.size > 2400) landTrace.removeFirst()
     }
 
     /** The small island and the row as they stand this frame, in host pixels. */
@@ -7059,14 +7146,17 @@ private class MiniPlayerController(
     private val morphListener = object : MiniCardMorph.Listener {
         /** A scene exit hands the pill back only once the cover has let go of the lock screen. */
         override fun canSettle(morph: MiniCardMorph, toNative: Boolean) =
-            toNative || !morphScene || !Main.coverSceneActive()
+            isCurrent(morph) && (!morphScene || sceneHandoffReady(toNative))
+
+        override fun isCurrent(morph: MiniCardMorph): Boolean =
+            this@MiniPlayerController.morph === morph && ownsMusicTransition(morph)
 
         override fun artBridged() = artBridged
 
         override fun onFrame(morph: MiniCardMorph, progress: Float) = groupFrame(morph)
 
         override fun onSettled(morph: MiniCardMorph, toNative: Boolean, completed: Boolean) {
-            if (this@MiniPlayerController.morph !== morph) return
+            if (!isCurrent(morph)) return
             this@MiniPlayerController.morph = null
             // Into the cover or the lyrics: landed on the card a moment before the scene has
             // the lock screen, the pill was the lock screen's again for those frames and came
@@ -7077,6 +7167,8 @@ private class MiniPlayerController(
             Xp.log("MCMini: container morph ${if (completed) "landed" else "cancelled"} " +
                 "at ${if (toNative) "native" else "mini"}")
             endGroup(toNative)
+            musicTransitionOwnership.finish(morph.ownerToken)
+            if (musicTransitionToken?.id == morph.ownerToken?.id) musicTransitionToken = null
             position()
             updateVisibility()
         }
@@ -7088,7 +7180,26 @@ private class MiniPlayerController(
      */
     fun beginTransition(toNative: Boolean, scene: Boolean): Boolean {
         if (scene) startSceneTrace()
+        if (!scene && !toNative && musicTransitionToken?.let {
+                !musicTransitionOwnership.accepts(it, toNative = false, scene = false)
+            } == true) {
+            Xp.log("MCMini: ignored mini target during music scene token=" + musicTransitionToken?.id)
+            return true
+        }
         morph?.let { running ->
+            if (scene && toNative && running.ownerToken == null &&
+                (noteMorphKey == null || noteMorphKey == MUSIC_ISLAND)) {
+                val token = beginMusicTransition(scene = true)
+                running.adoptTransitionToken(token)
+            }
+            if (running.ownerToken != null &&
+                !musicTransitionOwnership.accepts(running.ownerToken, toNative, scene)) {
+                Xp.log("MCMini: ignored stale dynamic target=" +
+                    (if (toNative) "native" else "mini") +
+                    " token=" + running.ownerToken?.id)
+                return true
+            }
+            if (scene && running.ownerToken != null) musicTransitionOwnership.promoteToScene(running.ownerToken)
             running.aim(toNative)
             morphScene = scene
             // A flight turned round holds its home again, or frees it.
@@ -7097,21 +7208,42 @@ private class MiniPlayerController(
         }
         // The music exchanged into the cover with the island out, or out of it for an island
         // opened there: the exchange is the scene's morph.
-        if (scene && exchange?.has(MUSIC_ISLAND) == true) return true
+        if (scene && exchange?.has(MUSIC_ISLAND) == true) {
+            val token = beginMusicTransition(scene = true)
+            morphScene = true
+            exchange?.let { x ->
+                x.musicSceneToken = token
+                x.movers[MUSIC_ISLAND]?.let { mover ->
+                    mover.transitionToken = token
+                    mover.morph?.adoptTransitionToken(token)
+                }
+            }
+            return true
+        }
         val view = player ?: return false
-        val token = controller?.sessionToken ?: return false
+        val sessionToken = controller?.sessionToken ?: return false
         // The card already chosen: nothing to become.
-        if (scene && MiniPlayerRuntime.nativeRequested(token)) return false
+        if (scene && MiniPlayerRuntime.nativeRequested(sessionToken)) return false
         if (!view.isAttachedToWindow || !Main.miniPlayerMorphAllowed()) return false
         val native = transitionHeader() ?: return false
-        if (scene && othersBesideMusic()) return startSceneFlight(native, toNative)
+        val tokenWasCreated = scene || toNative
+        val token = if (scene || toNative) beginMusicTransition(scene) else musicTransitionToken
+        if (scene && othersBesideMusic()) {
+            val started = startSceneFlight(native, toNative, token)
+            if (!started && tokenWasCreated) clearMusicEntry(token)
+            return started
+        }
         // A switch still settling is finished where it was headed: the card morph has the pill.
-        val next = prepareGroup(native, toNative) ?: return false
+        val next = prepareGroup(native, toNative, token) ?: run {
+            if (tokenWasCreated) clearMusicEntry(token)
+            return false
+        }
         morph = next
         morphScene = scene
         if (!next.start()) {
             morph = null
             morphScene = false
+            if (tokenWasCreated) clearMusicEntry(token)
             endGroup(!toNative)
             Xp.log("MCMini: no geometry for a morph; switching in place")
             updateVisibility()
@@ -7299,6 +7431,11 @@ private class MiniPlayerController(
         controller?.sessionToken?.let { token ->
             MiniPlayerRuntime.chooseMini(token)
         }
+    }
+
+    /** As the choice were made by a swipe down on the card: the pill, with the morph to it. */
+    fun forceMini() {
+        controller?.sessionToken?.let(MiniPlayerRuntime::selectMini)
     }
 
     /**

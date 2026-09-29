@@ -55,6 +55,8 @@ internal class MiniCardMorph(
      * instead. Read every frame; [circle] when there is none.
      */
     private var roundness: (() -> Float)? = null,
+    /** Identity of the music-card entry that owns this morph, when it is a scene hand-off. */
+    ownerToken: MusicTransitionToken? = null,
 ) : Choreographer.FrameCallback {
     class Landing(val art: View?, val title: View?, val text: View?, val radius: Float, val artRadius: Float) {
         companion object {
@@ -68,6 +70,9 @@ internal class MiniCardMorph(
         fun canSettle(morph: MiniCardMorph, toNative: Boolean): Boolean
         fun artBridged(): Boolean
         fun onSettled(morph: MiniCardMorph, toNative: Boolean, completed: Boolean)
+
+        /** Late frames from an older transition must not mutate the current presentation. */
+        fun isCurrent(morph: MiniCardMorph): Boolean = true
 
         /** Every frame drawn, with the progress it was drawn at (0 the mini end, 1 the far one). */
         fun onFrame(morph: MiniCardMorph, progress: Float) {}
@@ -110,6 +115,7 @@ internal class MiniCardMorph(
     }
 
     private val motion = CoverMorphMotion()
+    private val renderedProgress = TransitionProgress(if (toNative) 0f else 1f, toNative)
     private val saved = Saved(header)
     private val nativeRadius = landing.radius
     private val nativeArtRadius = landing.artRadius
@@ -132,6 +138,7 @@ internal class MiniCardMorph(
             outline.setRoundRect(0, 0, clipW.roundToInt(), clipH.roundToInt(), clipR)
         }
     }
+    private var transitionToken: MusicTransitionToken? = ownerToken
     private var running = false
 
     /**
@@ -191,6 +198,12 @@ internal class MiniCardMorph(
 
     val toNative: Boolean get() = motion.target == 1f
     val progress: Float get() = motion.value
+    val ownerToken: MusicTransitionToken? get() = transitionToken
+
+    /** Gives an already-running morph the token of the scene that adopted it. */
+    fun adoptTransitionToken(token: MusicTransitionToken) {
+        transitionToken = token
+    }
 
     /** A finger is on it: its progress is the finger's, not its spring's. */
     val held: Boolean get() = dragging
@@ -209,7 +222,8 @@ internal class MiniCardMorph(
         observe(true)
         Choreographer.getInstance().postFrameCallback(this)
         Xp.log("MCMini: container morph to=${if (toNative) "native" else "mini"} " +
-            "paired=${pieces.count { it.paired }}")
+            "paired=${pieces.count { it.paired }} by " +
+            Throwable().stackTrace.drop(1).take(4).joinToString("<-") { it.methodName })
         return true
     }
 
@@ -245,6 +259,8 @@ internal class MiniCardMorph(
         // [invert]: the other way on the same spring - one island going up into its card as
         // another comes down out of its own, the super island's expanded switch.
         val led = if (invert) 1f - leader.motion.value else leader.motion.value
+        renderedProgress.retarget(if (invert) !leader.toNative else leader.toNative,
+            motion.value)
         motion.value = lerp(from, led, share)
         motion.velocity = 0f
         nudge.value = if (invert) 0f else leader.nudge.value * share
@@ -270,6 +286,7 @@ internal class MiniCardMorph(
         if (!running) return
         dragging = false
         motion.aim(toNative)
+        renderedProgress.retarget(toNative, motion.value)
         // A hard fling handed on whole crossed the rest of the way in one frame: a flight let go
         // at 0.3 was past its end on the next, and its crossfade onto the island happened all at
         // once (2026-09-25). Fast, but over frames.
@@ -334,6 +351,7 @@ internal class MiniCardMorph(
     fun aim(toNative: Boolean) {
         if (!running) return
         motion.aim(toNative)
+        renderedProgress.retarget(toNative, motion.value)
         startedAt = SystemClock.uptimeMillis()
     }
 
@@ -345,6 +363,12 @@ internal class MiniCardMorph(
 
     override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC cardMorph"); try {
         if (!running) return
+        if (!listener.isCurrent(this)) {
+            // A newer music entry owns the card. Restore only this morph's writes and do not send
+            // a stale onSettled callback through the controller.
+            finish(false, notify = false)
+            return
+        }
         // Asleep, the lock screen gone: every frame. Its own lock screen's, not the clock
         // container's the cover morph asks after (Main.islandMorphStillEligible).
         if (!Main.islandMorphStillEligible(mini)) {
@@ -375,9 +399,8 @@ internal class MiniCardMorph(
             finish(false)
             return
         }
-        val late = SystemClock.uptimeMillis() - startedAt > SETTLE_LIMIT_MS
         if (motion.atRest() && nudge.atRest() && nudgeX.atRest()
-            && (late || listener.canSettle(this, toNative))) finish(true)
+            && listener.canSettle(this, toNative)) finish(true)
         else Choreographer.getInstance().postFrameCallback(this)
     } finally { android.os.Trace.endSection() } }
 
@@ -401,12 +424,25 @@ internal class MiniCardMorph(
         miniEndDrawn = miniRest
         val nativeRest = traced("MC m.native") { headerRestBox() } ?: return false
         if (miniRest.w <= 0f || nativeRest.w <= 0f) return false
-        val c = motion.value.coerceIn(0f, 1f)
-        val framed = containerFrame(miniRest, nativeRest, motion.value)
+        val c = renderedProgress.sample(motion.value, interactive = dragging)
+        // Use the same continuity-fenced progress for the container and its pieces.  Letting the
+        // box use the raw spring while the contents use the clamped value made the card's shell
+        // take one frame back toward the pill after a low-response overshoot.
+        val framed = containerFrame(miniRest, nativeRest, c)
         // The nudge moves the whole container toward the card (up from the pill, down from it).
         val towardNative = if (nativeRest.y <= miniRest.y) -1f else 1f
         val box = CoverMorphMotion.Box(framed.x + nudgeX.value * NUDGE_UNIT,
             framed.y + towardNative * nudge.value * NUDGE_UNIT, framed.w, framed.h)
+        if (geomFrames > 0) {
+            geomFrames--
+            Xp.log("MCGEO t=${SystemClock.uptimeMillis() - startedAt} c=${"%.3f".format(c)} " +
+                "mini=${miniRest.y.toInt()}+${miniRest.h.toInt()} " +
+                "nat=${nativeRest.y.toInt()}+${nativeRest.h.toInt()} " +
+                "box=${box.y.toInt()}+${box.h.toInt()} x=${box.x.toInt()}+${box.w.toInt()} " +
+                "ndy=${"%.1f".format(nativeDy?.invoke() ?: 0f)} " +
+                "hdr=${header.top}+${"%.1f".format(header.translationY)} v=${header.visibility} " +
+                "nj=${"%.1f".format(nudge.value * NUDGE_UNIT)}")
+        }
         val radius = lerp(miniRest.h / 2f, nativeRadius, c)
 
         // The card, at the container's width and cut to its height. s is in the card's own
@@ -525,14 +561,14 @@ internal class MiniCardMorph(
         return true
     }
 
-    private fun finish(completed: Boolean) {
+    private fun finish(completed: Boolean, notify: Boolean = true) {
         if (!running) return
         running = false
         Choreographer.getInstance().removeFrameCallback(this)
         observe(false)
         placedBox = null
         restore()
-        listener.onSettled(this, toNative, completed)
+        if (notify) listener.onSettled(this, toNative, completed)
     }
 
     private fun restore() {
@@ -723,11 +759,17 @@ internal class MiniCardMorph(
     }
 
     companion object {
+        /**
+         * `op cardgeom` counts frames down from here: one morph's flight written out end to end,
+         * both ends and the box between them, for a card that jumps on the way to its slot.
+         */
+        @JvmStatic var geomFrames = 0
+
         /** The most progress per second a let-go hands the spring. */
         private const val MAX_RELEASE_SPEED = 5f
 
         /** Past this the destination is handed back even if the scene is still moving. */
-        private const val SETTLE_LIMIT_MS = 2200L
+    private const val SETTLE_LIMIT_MS = 2200L
 
         /** A leader's pose this recent stands for the frame's (follow). */
         private const val LED_FRESH_MS = 12L

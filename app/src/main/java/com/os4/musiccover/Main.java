@@ -3034,6 +3034,18 @@ public class Main extends XposedModule {
                         MotionTrace.arm(i.getIntExtra("n", 4));
                     } else if ("geomtrace".equals(op)) {
                         startGeomTrace(i.getIntExtra("ms", 4000));
+                    } else if ("pill".equals(op)) {
+                        // Back onto the pill, whatever the screen is showing: the card's choice
+                        // forced to mini and the cover scene left. A probe stand-in for the
+                        // swipe-down that a hand does on the card, for filming a pill tap again.
+                        MiniPlayerRuntime.forceMini();
+                        if (sCoverMode) exitFromTap("probe asked for the pill");
+                        setResultData("pill forced");
+                    } else if ("cardgeom".equals(op)) {
+                        // --ei n 200: the next N morph frames written out with both ends of the
+                        // flight, for a card that jumps on its way to the stack's slot.
+                        MiniCardMorph.setGeomFrames(i.getIntExtra("n", 200));
+                        setResultData("cardgeom armed");
                     } else if ("state".equals(op)) {
                         Xp.log(TAG + "state: holdY=" + sHoldY
                                 + " lastSystemY=" + sLastSystemY + " clock " + ClockCollapse.describe()
@@ -6762,8 +6774,14 @@ public class Main extends XposedModule {
         return !sMiniBouncerUp;
     }
 
-    /** Enter through the same route as the OEM artwork, with MiniPlayerRuntime owning the bridge. */
-    static void miniPlayerEnterCover() {
+    /**
+     * Enter through the same route as the OEM artwork, with MiniPlayerRuntime owning the bridge.
+     * False when the entry was refused, and the caller must then record nothing in the island's
+     * favour: choosing the native card for a cover that never came up is what showed the OEM
+     * header at the top of the stack for a couple of frames, the pill gone under it, before the
+     * next refresh put the pill back (filmed 2026-09-29, the card jerking up on a capsule tap).
+     */
+    static boolean miniPlayerEnterCover() {
         if (!miniPlayerCanShow()) {
             // Which of the four the entry died on, because three of them are normal and one is
             // not: a pull up into the card asks for the cover while the card is still on its way,
@@ -6775,7 +6793,7 @@ public class Main extends XposedModule {
                     + " keyguard=" + keyguardShowing()
                     + " onKeyguard=" + onKeyguardNow()
                     + " screen=" + screenOnCached());
-            return;
+            return false;
         }
         if (!sAuto) {
             CoverMorphLayer.cancel();
@@ -6783,6 +6801,7 @@ public class Main extends XposedModule {
         } else {
             enterFromTap("mini player tapped");
         }
+        return true;
     }
 
     /** An island opened from the cover: the cover goes, its card coming down into the row. */
