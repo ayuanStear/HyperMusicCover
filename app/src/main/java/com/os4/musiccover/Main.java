@@ -8520,16 +8520,31 @@ public class Main extends XposedModule {
                     return SWIPE_NONE;
                 }
                 if (dy > slop && dy > Math.abs(dx) * 1.2f) {
-                    sCardSwipeArmed = false;
-                    sCardSwipeFired = true;
-                    sArtSwallow = false;
                     if (sCardSwipeRow != null) {
+                        // 通知行上的一次下拉：这条通知是列表的还是通知岛的，到这里才看得出来。
+                        // 手指下面那条跟着手指滚了，说明列表还能滚，先把第一条滚回来，这一拉
+                        // 交给列表；它没动（已经在第一条），才轮到通知岛把这一堆收起成胶囊。
+                        // 下拉刚过 slop 还看不出归属：再等一点，让列表有机会先滚起来（这一小段
+                        // 仍然交给列表，事件不拦）。
+                        if (dy <= slop * 1.6f) return SWIPE_NONE;
+                        if (MiniPlayerRuntime.pullKeepsForList(dy, slop)) {
+                            sCardSwipeArmed = false;
+                            sCardSwipeRow = null;
+                            MiniPlayerRuntime.noteTouch("pull kept for the list: dy=" + dy);
+                            return SWIPE_NONE;
+                        }
+                        sCardSwipeArmed = false;
+                        sCardSwipeFired = true;
+                        sArtSwallow = false;
                         // A notification the row of islands let out goes back into it.
                         String key = sCardSwipeRow;
                         sCardSwipeRow = null;
                         MiniPlayerRuntime.collapseRow(key, ev);
                         return SWIPE_FIRED;
                     }
+                    sCardSwipeArmed = false;
+                    sCardSwipeFired = true;
+                    sArtSwallow = false;
                     // With notifications to fold, the pull is not cancelled out from under the
                     // stack, in the cover as out of it. Without any, it still is: there the
                     // stack's own answer to a pull down is to start opening the shade.

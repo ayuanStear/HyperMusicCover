@@ -1336,6 +1336,17 @@ object MiniPlayerRuntime {
         live().firstNotNullOfOrNull { it.releasedRowAt(x, y) }
 
     /**
+     * 这一拉是不是列表自己的：手指下面那条通知跟着手指滚了，收起就先让给列表，先把第一条
+     * 滚回来。false 时才是通知岛把这一堆收起成胶囊。
+     */
+    @JvmStatic fun pullKeepsForList(dy: Float, slop: Float): Boolean =
+        live().any { it.pullKeepsForList(dy, slop) }
+
+    /** For `op nscroll`: 列表自己的滚动读数，这一次下拉归谁就看它。 */
+    @JvmStatic fun listScrollProbe(): String =
+        live().joinToString(" | ") { it.listScrollProbe() }
+
+    /**
      * That row folds back into the row of islands, following the finger from [ev] on as the
      * media card does when it is pulled down into the pill.
      */
@@ -3649,14 +3660,23 @@ private class MiniPlayerController(
             "rows=${rows.joinToString(",") { shortName(it) + "@" + it.translationY.toInt() }} " +
             "missing=${LockIslands.stackMembers.filter { it != lead && findRow(it) == null }.joinToString(",") { shortKey(it) }}")
         if (rows.isEmpty()) return
-        // Their turns: the nearest to the lead in the stack first.
+        // Their turns: the nearest to the lead in the stack first. 出场按这个次序：最近的先
+        // 出来。回程不重新排：同一个次序倒着走就是倒放，离岛最远的那条先进岛，最近的最后
+        // 进去。原先回程按远近重排了一遍，收岛看着和展开一样是「最近的先动」，不是倒叙
+        // (2026-09-29)。
         val at = stackTargetY(keep) + keep.top
-        rows.sortedBy { kotlin.math.abs(stackTargetY(it) + it.top - at) }.forEachIndexed { i, row ->
+        val byLead = rows.sortedBy { kotlin.math.abs(stackTargetY(it) + it.top - at) }
+        byLead.forEachIndexed { i, row ->
             val pile = piles.getOrPut(row) {
                 // First seen where the lead is: nothing moves at once.
                 PileRow(row).also { it.out.value = pileTarget(progress, i + 1) }
             }
             pile.turn = i + 1
+        }
+        // 兜底的表开着就行（pileWatch）：拖拽里这一句一帧要走一次，已经在走就不再动它。
+        if (!pileWatchOn) {
+            pileWatchOn = true
+            handler.postDelayed(pileWatch, PILE_WATCH_MS)
         }
     }
 
@@ -3757,14 +3777,54 @@ private class MiniPlayerController(
     /** The lead has landed out in its row and the rows are still on their way: they go on on their own. */
     private val pileSettle = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            if (!pileMoving && piles.values.all { it.out.value == 1f }) {
-                finishPile(true)
+            // 落点看 endPile 定的那个头：出到行里是 1，收回岛里是 0。
+            val toRow = pileAt > 0.5f
+            val there = if (toRow) 1f else 0f
+            if (!pileMoving && piles.values.all { kotlin.math.abs(it.out.value - there) < 0.002f }) {
+                finishPile(toRow)
                 return
             }
             // Stepped and placed before the frame is drawn (pilePreDraw): this only asks for the frame.
             observePiles(true)
             pileObserved?.invalidate()
             Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    /**
+     * 一堆通知卡在半路时的兜底。收岛的动画由通知岛自己的形变带着走（pileStack 一帧一给），
+     * 形变半路没人再推了 - 一条被丢掉的通知、一次半路的会话切换 - 那几条通知就带着矩阵停
+     * 在屏幕中间，看着就是「收不起来」(2026-09-29 录像)。半秒没人动它，就按它本来的去向
+     * 收尾，矩阵和透明度都还回去。
+     */
+    private var pileWatchOn = false
+    private var pileWatchQuiet = 0
+    private var pileWatchSum = Float.NaN
+    private val pileWatch = object : Runnable {
+        override fun run() {
+            if (piles.isEmpty() && !pileMoving) {
+                pileWatchOn = false
+                pileWatchSum = Float.NaN
+                pileWatchQuiet = 0
+                return
+            }
+            val sum = piles.values.fold(0f) { a, p -> a + p.out.value }
+            // 只在真没人管它的时候动手：形变、换岛、还有手指按着的时候都不算 - 收岛收到一半
+            // 被这一下按掉，看着就是几条通知在半路忽然不见(2026-09-29)。
+            val pushed = (morph?.isRunning ?: false) || exchange != null || noteDrag != null ||
+                noteMorphKey != null || flight != null
+            if (!pushed && (pileWatchSum.isNaN() || kotlin.math.abs(sum - pileWatchSum) < 0.004f)) {
+                if (++pileWatchQuiet >= PILE_WATCH_QUIET) {
+                    val toRow = pileAt > 0.5f
+                    trace("pile watchdog: 没人再推它了 rows=${pileRows.size} toRow=$toRow")
+                    finishPile(toRow)
+                    return
+                }
+            } else {
+                pileWatchQuiet = 0
+            }
+            pileWatchSum = sum
+            handler.postDelayed(this, PILE_WATCH_MS)
         }
     }
 
@@ -3790,7 +3850,10 @@ private class MiniPlayerController(
         trace("pile end toRow=$toRow rows=${pileRows.joinToString(",") { shortName(it) }}")
         pileTraceBucket = -1
         pileAt = if (toRow) 1f else 0f
-        if (toRow && piles.values.any { !it.out.atRest() || it.out.value != 1f }) {
+        // 回程也让它走完：岛已经落回原位，剩下的几条还在往里收，这一下就把它们按掉的话，
+        // 收岛动画看着就是没收完、几条通知忽然不见(2026-09-29)。
+        val there = if (toRow) 1f else 0f
+        if (piles.values.any { !it.out.atRest() || kotlin.math.abs(it.out.value - there) > 0.002f }) {
             pileMoving = true
             Choreographer.getInstance().removeFrameCallback(pileSettle)
             Choreographer.getInstance().postFrameCallback(pileSettle)
@@ -3801,6 +3864,10 @@ private class MiniPlayerController(
 
     private fun finishPile(toRow: Boolean) {
         Choreographer.getInstance().removeFrameCallback(pileSettle)
+        handler.removeCallbacks(pileWatch)
+        pileWatchOn = false
+        pileWatchSum = Float.NaN
+        pileWatchQuiet = 0
         observePiles(false)
         pileMoving = false
         pileFoundAt = 0L
@@ -6191,7 +6258,13 @@ private class MiniPlayerController(
         val drag = noteDrag ?: return
         drag.ended = true
         val speed = if (drag.opening) -velocityY else velocityY
-        val (toRow, _) = MiniPlayerRuntime.lift(drag.pulled(), speed, !drag.opening, drag.threshold,
+        // 往下收的那一条：过了阈值就直接一路收进胶囊岛。再按速度判一次，会把已经拉过阈值的
+        // 手势弹回通知行——看到的就是收起动画走到一半被打断、通知还留在原位。
+        val closing = !drag.opening && !cancelled && drag.pulled() > drag.threshold
+        val (toRow, _) = if (closing) {
+            trace("collapse committed at ${drag.pulled().toInt()}px")
+            false to (-speed / spanOf(drag))
+        } else MiniPlayerRuntime.lift(drag.pulled(), speed, !drag.opening, drag.threshold,
             spanOf(drag), cancelled)
         drag.toRow = toRow
         drag.speed = if (drag.pulled() > drag.threshold) speed else 0f
@@ -6264,6 +6337,11 @@ private class MiniPlayerController(
 
     /** A released notification's row under a point on screen, by key. */
     fun releasedRowAt(x: Float, y: Float): String? {
+        // 已经在收起的通知归它自己：此刻落在上面的手指不接管这次形变，也不能把它半路送回原位。
+        if (noteMorphKey != null || morph != null) return null
+        // 新的一次按下：先把上一次记下的那条忘掉。
+        pullRow = null
+        pullRowTop = Float.NaN
         val xy = IntArray(2)
         for (key in LockIslands.releasedKeys()) {
             // The stack island's rows are all its: the one under the finger leads it home.
@@ -6272,12 +6350,148 @@ private class MiniPlayerController(
                 if (!row.isShown || row.width <= 0) continue
                 row.getLocationOnScreen(xy)
                 if (x >= xy[0] && x < xy[0] + row.width && y >= xy[1] && y < xy[1] + row.height) {
-                    if (key == STACK_ISLAND && noteMorphKey != STACK_ISLAND) stackLeadKey = member
+                    // 这一拉是列表的还是通知岛的，按下这一刻还看不出来：先记下手指下面这条的
+                    // 屏幕位置，等下拉过阈值时看它有没有跟着手指走（跟着走就是列表还能滚）。
+                    pullRow = WeakReference(row)
+                    pullRowTop = xy[1].toFloat()
                     return key
                 }
             }
         }
         return null
+    }
+
+    /** 按下时手指下面那条通知，用来判断这一拉列表还会不会滚。 */
+    private var pullRow: WeakReference<View>? = null
+    private var pullRowTop = Float.NaN
+
+    /** 那条通知跟着手指走了这么多像素，这一拉就算列表的（跟着手指走＝列表还能滚）。 */
+    private val pullRowSlopPx = 10f
+
+    /**
+     * 这一拉是列表的，还是通知岛的：按下以后手指下面那条通知以下拉的比例跟着往下走，
+     * 说明列表还能滚，先把第一条滚回来，这一拉不收起；它没跟着走（已经在第一条），才轮
+     * 到通知岛把这一堆收起成胶囊。读不到那一条时按“没滚”处理，保持原来的手势。
+     */
+    fun pullKeepsForList(dy: Float, slop: Float): Boolean {
+        // 先问列表自己的滚动位置：还被上滑过、第一条没回到原位，这一拉就是列表自己的，先
+        // 让它把第一条滚回来；第一条回到原位了，才轮到通知岛把这一堆收起成胶囊。
+        //
+        // 不按那条行有没有跟着手指动来判断：行在列表滚动里本来就落后于手指，按下那一下更
+        // 是什么都没动，而下拉会随手指越来越快，按比例算出来的“该动多少”越拉越追不上。学
+        // 一条原位记下来的办法也不行 - 列表在堆叠状态下的位置会被当成原位记死，之后每次都
+        // 判成没回到第一条，下拉就永远收不起来（2026-09-29 录像：拉两次，通知一直留在列表）。
+        val kept = listScrolledAway() ?: run {
+            val v = pullRow?.get() ?: return false
+            if (!v.isAttachedToWindow) return true
+            if (pullRowTop.isNaN()) return false
+            val xy = IntArray(2)
+            v.getLocationOnScreen(xy)
+            xy[1] - pullRowTop > maxOf(pullRowSlopPx, (dy - slop) * 0.4f)
+        }
+        MiniPlayerRuntime.noteTouch("pull kept=$kept " + listScrollWhy() + " dy=" + dy.toInt())
+        return kept
+    }
+
+    /** 列表第一条还在原位的容差（像素）。 */
+    private val listFirstRowSlopPx = 4f
+
+    /** 列表把滚动量记在哪个字段：MIUI 这台机器上是 mOwnScrollY。 */
+    private val SCROLL_FIELDS = arrayOf("mOwnScrollY", "mCurrentScrollY")
+
+    /** 列表被上滑过、第一条还没回到原位；列表读不到时 null。 */
+    private fun listScrolledAway(): Boolean? {
+        val stack = notificationStack() ?: return null
+        val scroll = stackScrollPx(stack)
+        // 读数拿得到就先信读数：这台机器把列表自己的滚动量记在 mOwnScrollY 上，到头是 0。
+        // 读数是 0 而列表自己说还能往上滚时，再看手指下面那条有没有跟着往下走：跟着走是
+        // 列表真在滚（读数字段没跟上），没动就是列表已经到头了，这一拉该轮通知岛。
+        if (scroll != null) {
+            if (scroll > listFirstRowSlopPx) return true
+            return if (stackCanScrollUp(stack) == true) pullRowMoved() else false
+        }
+        return stackCanScrollUp(stack)
+    }
+
+    /** 手指下面那条通知从按下到现在，有没有跟着往下走（列表在滚它就会走）。 */
+    private fun pullRowMoved(): Boolean {
+        val v = pullRow?.get() ?: return false
+        if (!v.isAttachedToWindow) return false
+        if (pullRowTop.isNaN()) return false
+        val xy = IntArray(2)
+        v.getLocationOnScreen(xy)
+        return xy[1] - pullRowTop > pullRowSlopPx
+    }
+
+    /** 列表还能不能往上滚（第一条已经被滚上去了）；读不到时 null。 */
+    private fun stackCanScrollUp(stack: View): Boolean? {
+        (fieldOf(stack, "mBackwardScrollable") as? Boolean)?.let { return it }
+        return runCatching { stack.canScrollVertically(-1) }.getOrNull()
+    }
+
+    /** [name] 这个字段在 [v] 类上（含父类）的值，找不到时为 null。 */
+    private fun fieldOf(v: View, name: String): Any? = runCatching {
+        var c: Class<*>? = v.javaClass
+        while (c != null && c != View::class.java) {
+            val f = runCatching { c.getDeclaredField(name) }.getOrNull()
+            if (f != null) {
+                f.isAccessible = true
+                return@runCatching f.get(v)
+            }
+            c = c.superclass
+        }
+        null
+    }.getOrNull()
+
+    /** 锁屏通知列表自己的滚动量（像素），读不到时为 null。 */
+    private fun stackScrollPx(stack: View): Float? {
+        // 这台机器上列表把滚动量记在 mOwnScrollY（2026-09-29 `op nscroll` 读出来的），别的
+        // 版本叫 mCurrentScrollY 或有个 getCurrentScrollY。一个都读不到的机器上返回 null，
+        // 由 listScrolledAway 退回“还能不能往上滚”。
+        for (name in SCROLL_FIELDS) (fieldOf(stack, name) as? Number)?.let { return it.toFloat() }
+        return runCatching { (Xp.callMethod(stack, "getCurrentScrollY") as? Number)?.toFloat() }
+            .getOrNull()
+    }
+
+    /** 列表滚动状态的读数，一行，给 `op mini` 的触摸日志看这一次下拉判的是什么。 */
+    private fun listScrollWhy(): String {
+        val stack = notificationStack() ?: return "no stack"
+        return "scroll=" + stackScrollPx(stack) +
+            " canUp=" + stackCanScrollUp(stack) +
+            " scrolledAway=" + listScrolledAway()
+    }
+
+    /** For `op nscroll`: 列表的滚动读数，加上列表自己的状态和领头那条。 */
+    fun listScrollProbe(): String {
+        val sb = StringBuilder(listScrollWhy())
+        sb.append(" state=").append(stackState())
+        sb.append(" lead=").append(stackLead()?.let(::shortKey) ?: "-")
+        sb.append(" released=").append(LockIslands.releasedKeys().size)
+        val stack = notificationStack()
+        sb.append(" stack=").append(stack?.javaClass?.simpleName)
+        if (stack != null) {
+            sb.append(" viewScrollY=").append(stack.scrollY)
+            sb.append(" canDown=").append(runCatching { stack.canScrollVertically(1) }.getOrNull())
+            // 类里跟滚动有关的字段全读出来：MIUI 各版本的字段名不一样，一个都读不到就得换办法。
+            var c: Class<*>? = stack.javaClass
+            while (c != null && c != View::class.java) {
+                for (f in c.declaredFields) {
+                    if (!f.name.contains("croll", ignoreCase = true)) continue
+                    val v = runCatching { f.isAccessible = true; f.get(stack) }.getOrNull()
+                    if (v is Number || v is Boolean) {
+                        sb.append(" ").append(c.simpleName).append(".").append(f.name).append("=").append(v)
+                    }
+                }
+                c = c.superclass
+            }
+            val row = stackLead()?.let { findRow(it)?.first }
+            if (row != null) {
+                val xy = IntArray(2).also(row::getLocationOnScreen)
+                sb.append(" leadRow y=").append(xy[1]).append(" top=").append(row.top)
+                    .append(" ty=").append(row.translationY.toInt()).append(" h=").append(row.height)
+            }
+        }
+        return sb.toString()
     }
 
     /** The lock screen's notification stack, found once in the window. */
@@ -7066,6 +7280,8 @@ private class MiniPlayerController(
     private fun trace(what: String) {
         landTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $what")
         while (landTrace.size > 2400) landTrace.removeFirst()
+        // verbose 打开时把轨迹同时写进日志：收起卡住这类问题只能在真机轨迹上看出来。
+        if (Main.verbose()) Xp.log("[MCT] $what")
     }
 
     /** The small island and the row as they stand this frame, in host pixels. */
@@ -8014,8 +8230,9 @@ private class MiniPlayerController(
         return view
     }
 
-    private val noteBitmaps = HashMap<String, Pair<Long, Bitmap?>>()
+    /** 图标位图按 key 记住：时间或图标本身换了就要重画（合计岛的图标换没换就看这两个）。 */
 
+    private val noteBitmaps = HashMap<String, Triple<Long, android.graphics.drawable.Drawable?, Bitmap?>>()
     /** For `op mini`: what the focus Lotties did, and who hid them - kept apart from the touches. */
     private val lottieLog = ArrayDeque<String>()
 
@@ -8250,7 +8467,7 @@ private class MiniPlayerController(
 
     /** A note's picture as the pill's artwork wants it: a bitmap, drawn once per update. */
     private fun noteBitmap(note: LockIslands.Note): Bitmap? {
-        noteBitmaps[note.key]?.let { (time, bitmap) -> if (time == note.time) return bitmap }
+        noteBitmaps[note.key]?.let { (time, icon, bitmap) -> if (time == note.time && icon === note.icon) return bitmap }
         val drawable = note.icon
         val side = dp(56f)
         val bitmap = drawable?.let {
@@ -8275,7 +8492,7 @@ private class MiniPlayerController(
             }.getOrNull()
         }
         if (noteBitmaps.size > 60) noteBitmaps.clear()
-        noteBitmaps[note.key] = note.time to bitmap
+        noteBitmaps[note.key] = Triple(note.time, note.icon, bitmap)
         return bitmap
     }
 
@@ -8953,9 +9170,14 @@ private const val SWAP_DAMPING = 0.82f
 private const val SWIPE_SHARE = 0.14f
 /** How much of the pull the pill still follows past the row's end (islandDrag). */
 private const val SWIPE_END_GIVE = 0.35f
-/** The stack island's other rows come in over this part of their own way out from under it (pileStack). */
+/**
+ * The stack island's other rows come in over this part of their own way out from under it
+ * (pileStack). 只留最后一小段：0.3 时一条还差三成路到岛里就已经淡没了，看着就是几条通知在
+ * 原地直接消失、没有收成胶囊岛(2026-09-29)。留 0.1 - 一路看得见地飞进岛里，只在进岛那一
+ * 下淡掉。
+ */
 private const val PILE_IN_FROM = 0f
-private const val PILE_IN_TO = 0.3f
+private const val PILE_IN_TO = 0.1f
 /** The stack is asked for its list for this long at most, every step, till it is one (showStackAsList). */
 private const val LIST_ASK_MS = 900L
 private const val LIST_ASK_STEP_MS = 50L
@@ -8963,6 +9185,10 @@ private const val LIST_ASK_STEP_MS = 50L
 private const val TURN_SETTLE_MS = 200L
 /** The stack island's rows are looked for again after this long at the most (pileStack). */
 private const val PILE_FIND_MS = 8L
+/** 一堆通知没人再推它时，隔这么久看一次，连着几次没动就收尾（pileWatch）。 */
+private const val PILE_WATCH_MS = 250L
+/** 连着这么多看看都没动才算真没人管（pileWatch）：半路被打断的动画也有几帧是静的。 */
+private const val PILE_WATCH_QUIET = 4
 /** Each row's spring: a little softer than the switch's, so the last ones settle with a give. */
 private const val PILE_RESPONSE = 0.32f
 private const val PILE_DAMPING = 0.74f

@@ -735,9 +735,13 @@ internal object LockIslands {
         val n = members.size
         val title = if (n > 1) "通知" else lead.title
         val text = if (n > 1) "$n 条通知" else lead.text
+        // 左边那个图标要的是列表里最新那条通知的（不是排在最前的那个岛）：合计文本照旧，
+        // 只有图标跟着最新的一条走。
+        // 合计岛的图标位图在 noteBitmap 里按 key+time 记住：time 取最新那条，换新通知才会换图。
+        val newest = members.filter { it.time > 0L }.maxByOrNull { it.time } ?: lead
         return Note(STACK_KEY, lead.pkg, title, text,
-            lead.icon, focus = false, time = lead.time, intent = lead.intent, group = null,
-            summary = false, redacted = lead.redacted, since = members.maxOf { it.since }, iconFrom = lead.iconFrom)
+            newest.icon ?: lead.icon, focus = false, time = maxOf(lead.time, newest.time), intent = lead.intent, group = null,
+            summary = false, redacted = lead.redacted, since = members.maxOf { it.since }, iconFrom = if (newest.icon != null) newest.iconFrom else lead.iconFrom)
     }
 
     /** A notification island's standing, released or not; null for one this lock screen has not got. */
