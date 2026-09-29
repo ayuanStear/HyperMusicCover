@@ -348,23 +348,13 @@ internal object LockIslands {
             (if (it.focus) "F:" else "") + (if (it.redacted) "R:" else "") + it.pkg +
                 (if (!it.focus || it.redacted) "<${it.iconFrom}>" else "") +
                 "[${it.property}/${it.priority}${if (it.order) "/o" else ""} " +
-                "t=-${(System.currentTimeMillis() - it.since) / 1000}s " +
-                // Every note's own two lines, not just a focus one's: "the row is showing the
-                // package name" is a report about these two strings, and without them the answer
-                // is a guess. Truncated - the probe is read on a phone.
-                "'${it.title.take(24)}'/'${it.text.take(24)}']" +
+                "t=-${(System.currentTimeMillis() - it.since) / 1000}s]" +
                 (if (it.focus && !it.redacted) "{${it.timer?.let { t -> "timer ${t.type} ${t.text()} " } ?: ""}" +
-                    "icon=${it.icon?.javaClass?.simpleName}<${it.iconFrom}> " +
+                    "'${it.title.take(20)}'/'${it.text.take(20)}' icon=${it.icon?.javaClass?.simpleName}<${it.iconFrom}> " +
                     "anim=${it.anim?.let { a -> "${a.src}/${a.autoplay}/row=${a.row.get() != null}" }} " +
                     (it.live?.let { l -> "live=${l.id} " } ?: "") +
                     "btn=${it.buttons.joinToString("/") { b -> "${b.index}:t${b.type}:${b.iconName}" }}}" else "")
-        } + if (creationUnreadable) " creation=unreadable" else "" +
-            // Everything the last locked run read, row or member alike. The row shows one note at
-            // a time, so a report about a notification that is inside the stack island - "its
-            // name is the package and it has no icon" - cannot be answered from `notes` alone.
-            " read=" + lastRead.values.joinToString(",") {
-                it.pkg + "<" + it.iconFrom + ">'" + it.title.take(16) + "'"
-            }
+        } + if (creationUnreadable) " creation=unreadable" else ""
 
     fun addListener(listener: () -> Unit) {
         listeners.addIfAbsent(listener)
@@ -733,16 +723,37 @@ internal object LockIslands {
         stackFrom = members
         val lead = members.first()
         val n = members.size
-        val title = if (n > 1) "通知" else lead.title
-        val text = if (n > 1) "$n 条通知" else lead.text
-        // 左边那个图标要的是列表里最新那条通知的（不是排在最前的那个岛）：合计文本照旧，
-        // 只有图标跟着最新的一条走。
-        // 合计岛的图标位图在 noteBitmap 里按 key+time 记住：time 取最新那条，换新通知才会换图。
-        val newest = members.filter { it.time > 0L }.maxByOrNull { it.time } ?: lead
-        return Note(STACK_KEY, lead.pkg, title, text,
-            newest.icon ?: lead.icon, focus = false, time = maxOf(lead.time, newest.time), intent = lead.intent, group = null,
-            summary = false, redacted = lead.redacted, since = members.maxOf { it.since }, iconFrom = if (newest.icon != null) newest.iconFrom else lead.iconFrom)
+        // 上游的合计岛：领头那条的标题和内容，多于一条时前面加「N 条通知 ·」；图片也用领头那条的。
+        return Note(STACK_KEY, lead.pkg, lead.title, stackText(lead, n),
+            lead.icon, focus = false, time = lead.time, intent = lead.intent, group = null,
+            summary = false, redacted = lead.redacted, since = members.maxOf { it.since }, iconFrom = lead.iconFrom)
     }
+
+    /**
+     * 合计岛自己那一行：领头那条通知的内容，多于一条时带上条数（「3 条通知 · ...」）。
+     *
+     * 隐藏内容没有自己的文字 - 锁屏在这儿显示的是 SystemUI 的 notification_hidden_text
+     * （[hiddenText]），把这句话接在条数后面等于什么都没说：整行读出来是
+     * 「3 条通知 · 你有一条新消息」。这时整行就是条数本身（用户 2026-09-28）：
+     * 「你有两条新消息」，超过 [HIDDEN_MANY] 条时「你有多条新消息」。只有一条时保留它一直
+     * 显示的那个占位句；自己带文字的通知原样不动，条数照旧。
+     */
+    private fun stackText(lead: Note, n: Int): CharSequence {
+        if (!lead.redacted || !android.text.TextUtils.equals(lead.text, hiddenText())) {
+            return if (n > 1) "$n 条通知 · ${lead.text}" else lead.text
+        }
+        return when {
+            n <= 1 -> lead.text
+            n > HIDDEN_MANY -> "你有多条新消息"
+            else -> "你有${HIDDEN_COUNT[n]}条新消息"
+        }
+    }
+
+    /** 隐藏内容超过这么多条就是「多条」；[HIDDEN_COUNT] 数到它为止。 */
+    private const val HIDDEN_MANY = 5
+
+    /** 零到五，给隐藏那一行用：「你有两条新消息」。 */
+    private val HIDDEN_COUNT = arrayOf("零", "一", "两", "三", "四", "五")
 
     /** A notification island's standing, released or not; null for one this lock screen has not got. */
     fun rankOf(key: String): Rank? {
@@ -925,7 +936,25 @@ internal object LockIslands {
     }.getOrNull()
 
     /** [pics]: the pictures its first area names, in the order the plugin would try them. */
-    private class Template(val title: String, val text: String, val timer: Timer?, val pics: List<Pic>)
+    private class Template(val title: CharSequence, val text: CharSequence, val timer: Timer?, val pics: List<Pic>)
+
+    /**
+     * 焦点模板里的文字，按它那一行画出来的样子读。
+     *
+     * MIUI 的焦点协议会把标记写进文字里 - 淘宝闪购的配送通知带着
+     * `<font color='#0FAD50'>预计34分钟送达</font>` - 而画那一行的插件把每个文字模块都过了一遍
+     * Html.fromHtml（四十来个 moduleV3 holder 都调它）。原样取过来的话胶囊上显示的是标记本身
+     * （用户 2026-09-28）。
+     *
+     * 只有这个协议会用到的标记按标记解析，别的原样留着。普通通知自己的标题和内容不过这一道：
+     * SystemUI 从不解析它们（没有任何一个类为通知调 Html.fromHtml），它那一行显示的就是原样，
+     * 岛也得显示那一行显示的东西。
+     */
+    private fun html(s: String): CharSequence =
+        if (HTML_TAG.containsMatchIn(s)) android.text.Html.fromHtml(s, android.text.Html.FROM_HTML_MODE_LEGACY)
+        else s
+
+    private val HTML_TAG = Regex("</?(font|b|i|u|big|small|a|br)(\\s[^>]*)?>", RegexOption.IGNORE_CASE)
 
     /**
      * A picture a focus notification names, and how the plugin draws a name of its [kind]:
@@ -995,8 +1024,9 @@ internal object LockIslands {
         // (a navigation's "直行98米 / 高德导航中"): its title, content and timer at the top, its
         // picture the one it gives the status bar.
         fun flat(o: org.json.JSONObject): Template? {
-            val title = str(o, "title")
-            val content = str(o, "content")
+            // 焦点协议的文字带 HTML 标记：按插件那一行显示的样子读（html）。
+            val title = html(str(o, "title"))
+            val content = html(str(o, "content"))
             val timer = timerOf(o)
             if (title.isEmpty() && content.isEmpty() && timer == null) return null
             return Template(title, content, timer, ticker(o) + named(o, "picFunction"))
@@ -1024,8 +1054,8 @@ internal object LockIslands {
             "chatInfo" -> named(info, "picProfileDark", "picProfile")
             else -> named(info, "picFunction")
         }.filter { it.name.isNotEmpty() }
-        Template(str(info, "title"), str(info, "content").ifEmpty { str(info, "subContent") }, timer,
-            pics + ticker(v2))
+        Template(html(str(info, "title")),
+            html(str(info, "content").ifEmpty { str(info, "subContent") }), timer, pics + ticker(v2))
     }.getOrNull()
 
     /**
@@ -1061,7 +1091,7 @@ internal object LockIslands {
         if (lines.isEmpty()) return null
         val pics = listOf("tickerPicDark", "tickerPic", "aodPic").map { str(root, it) }
             .filter { it.isNotEmpty() }.map { Pic(Pic.BUNDLE, it) }
-        Template(lines[0], lines.drop(1).joinToString(" "), null, islandPics(island) + pics)
+        Template(html(lines[0]), html(lines.drop(1).joinToString(" ")), null, islandPics(island) + pics)
     }.getOrNull()
 
     /**

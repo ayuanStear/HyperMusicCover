@@ -1330,13 +1330,6 @@ object MiniPlayerRuntime {
         live().firstNotNullOfOrNull { it.releasedRowAt(x, y) }
 
     /**
-     * 这一拉是不是列表自己的：手指下面那条通知跟着手指滚了，收起就先让给列表，先把第一条
-     * 滚回来。false 时才是通知岛把这一堆收起成胶囊。
-     */
-    @JvmStatic fun pullKeepsForList(dy: Float, slop: Float): Boolean =
-        live().any { it.pullKeepsForList(dy, slop) }
-
-    /**
      * That row folds back into the row of islands, following the finger from [ev] on as the
      * media card does when it is pulled down into the pill.
      */
@@ -5755,19 +5748,14 @@ private class MiniPlayerController(
         noteMorphKey = key
         flightFromSmall = false
         flightOut = false
-        // 收起落到哪里（用户的规则，2026-09-29）：
-        //  · 音乐胶囊岛在行里 -> 通知统一落到右边的小圆岛（胶囊位留给音乐）；
-        //  · 音乐不在（没有音乐胶囊）-> 才占胶囊位；
-        //  · 音乐岛自己收起时仍按它从哪出来回哪去（从小圆岛出来就回小圆岛）。
-        flightHome = if (key == MUSIC_ISLAND) {
-            if (key in releasedFromSmall) HOME_SMALL else HOME_PILL
-        } else if (MUSIC_ISLAND in islandKeys) {
-            HOME_SMALL
-        } else if (rowEmpty || key in releasedFromPill) {
-            HOME_PILL
-        } else {
-            HOME_SMALL
-        }
+        // Back where it came out of: the pill it was in, or the small island. The music, out
+        // as its card since before any pull, comes back into the pill - the super island's
+        // expanded island folds into its big one.
+        //
+        // 从哪出来回哪去（上游的规则）：原来在胶囊里的回胶囊，原来在小圆岛里的回小圆岛。
+        // 更早就成了卡片的音乐岛（不是被拉出来的）也回胶囊里 - 大岛收回它自己的大岛。
+        flightHome = if (rowEmpty || key in releasedFromPill ||
+            key == MUSIC_ISLAND && key !in releasedFromSmall) HOME_PILL else HOME_SMALL
         MiniPlayerRuntime.noteTouch("collapse home=${if (flightHome == HOME_PILL) "pill" else "small"} " +
             "empty=$rowEmpty")
         if (rowEmpty) {
@@ -6335,11 +6323,6 @@ private class MiniPlayerController(
 
     /** A released notification's row under a point on screen, by key. */
     fun releasedRowAt(x: Float, y: Float): String? {
-        // 已经在收起的通知归它自己：此刻落在上面的手指不接管这次形变，也不能把它半路送回原位。
-        if (noteMorphKey != null || morph != null) return null
-        // 新的一次按下：先把上一次记下的那条忘掉。
-        pullRow = null
-        pullRowTop = Float.NaN
         val xy = IntArray(2)
         for (key in LockIslands.releasedKeys()) {
             // The stack island's rows are all its: the one under the finger leads it home.
@@ -6348,122 +6331,14 @@ private class MiniPlayerController(
                 if (!row.isShown || row.width <= 0) continue
                 row.getLocationOnScreen(xy)
                 if (x >= xy[0] && x < xy[0] + row.width && y >= xy[1] && y < xy[1] + row.height) {
-                    // 这一拉是列表的还是通知岛的，按下这一刻还看不出来：先记下手指下面这条的
-                    // 屏幕位置，等下拉过阈值时看它有没有跟着手指走（跟着走就是列表还能滚）。
-                    pullRow = WeakReference(row)
-                    pullRowTop = xy[1].toFloat()
+                    // 手指下面这条就是这一堆的领头：收起时由它带着其余各条回岛（上游）。
+                    if (key == STACK_ISLAND && noteMorphKey != STACK_ISLAND) stackLeadKey = member
                     return key
                 }
             }
         }
         return null
     }
-
-    /** 按下时手指下面那条通知，用来判断这一拉列表还会不会滚。 */
-    private var pullRow: WeakReference<View>? = null
-    private var pullRowTop = Float.NaN
-
-    /** 那条通知跟着手指走了这么多像素，这一拉就算列表的（跟着手指走＝列表还能滚）。 */
-    private val pullRowSlopPx = 10f
-
-    /**
-     * 这一拉是列表的，还是通知岛的：按下以后手指下面那条通知以下拉的比例跟着往下走，
-     * 说明列表还能滚，先把第一条滚回来，这一拉不收起；它没跟着走（已经在第一条），才轮
-     * 到通知岛把这一堆收起成胶囊。读不到那一条时按“没滚”处理，保持原来的手势。
-     */
-    fun pullKeepsForList(dy: Float, slop: Float): Boolean {
-        // 「先把列表滚回第一条再收岛」只对列表成立：只有通知堆岛展开成列表时才是列表。
-        // 从右边小圆岛点开的那一条通知不是列表，它的一拉就是它自己的 - 去问列表只会一直
-        // 判成「列表还在滚」，于是怎么拉都收不回去（2026-09-29 反馈：点得出来、收不回去）。
-        if (expandedKey() != STACK_ISLAND) return false
-        // 先问列表自己的滚动位置：还被上滑过、第一条没回到原位，这一拉就是列表自己的，先
-        // 让它把第一条滚回来；第一条回到原位了，才轮到通知岛把这一堆收起成胶囊。
-        //
-        // 不按那条行有没有跟着手指动来判断：行在列表滚动里本来就落后于手指，按下那一下更
-        // 是什么都没动，而下拉会随手指越来越快，按比例算出来的“该动多少”越拉越追不上。学
-        // 一条原位记下来的办法也不行 - 列表在堆叠状态下的位置会被当成原位记死，之后每次都
-        // 判成没回到第一条，下拉就永远收不起来（2026-09-29 录像：拉两次，通知一直留在列表）。
-        val kept = listScrolledAway() ?: run {
-            val v = pullRow?.get() ?: return false
-            if (!v.isAttachedToWindow) return true
-            if (pullRowTop.isNaN()) return false
-            val xy = IntArray(2)
-            v.getLocationOnScreen(xy)
-            xy[1] - pullRowTop > maxOf(pullRowSlopPx, (dy - slop) * 0.4f)
-        }
-        MiniPlayerRuntime.noteTouch("pull kept=$kept " + listScrollWhy() + " dy=" + dy.toInt())
-        return kept
-    }
-
-    /** 列表第一条还在原位的容差（像素）。 */
-    private val listFirstRowSlopPx = 4f
-
-    /** 列表把滚动量记在哪个字段：MIUI 这台机器上是 mOwnScrollY。 */
-    private val SCROLL_FIELDS = arrayOf("mOwnScrollY", "mCurrentScrollY")
-
-    /** 列表被上滑过、第一条还没回到原位；列表读不到时 null。 */
-    private fun listScrolledAway(): Boolean? {
-        val stack = notificationStack() ?: return null
-        val scroll = stackScrollPx(stack)
-        // 读数拿得到就先信读数：这台机器把列表自己的滚动量记在 mOwnScrollY 上，到头是 0。
-        // 读数是 0 而列表自己说还能往上滚时，再看手指下面那条有没有跟着往下走：跟着走是
-        // 列表真在滚（读数字段没跟上），没动就是列表已经到头了，这一拉该轮通知岛。
-        if (scroll != null) {
-            if (scroll > listFirstRowSlopPx) return true
-            return if (stackCanScrollUp(stack) == true) pullRowMoved() else false
-        }
-        return stackCanScrollUp(stack)
-    }
-
-    /** 手指下面那条通知从按下到现在，有没有跟着往下走（列表在滚它就会走）。 */
-    private fun pullRowMoved(): Boolean {
-        val v = pullRow?.get() ?: return false
-        if (!v.isAttachedToWindow) return false
-        if (pullRowTop.isNaN()) return false
-        val xy = IntArray(2)
-        v.getLocationOnScreen(xy)
-        return xy[1] - pullRowTop > pullRowSlopPx
-    }
-
-    /** 列表还能不能往上滚（第一条已经被滚上去了）；读不到时 null。 */
-    private fun stackCanScrollUp(stack: View): Boolean? {
-        (fieldOf(stack, "mBackwardScrollable") as? Boolean)?.let { return it }
-        return runCatching { stack.canScrollVertically(-1) }.getOrNull()
-    }
-
-    /** [name] 这个字段在 [v] 类上（含父类）的值，找不到时为 null。 */
-    private fun fieldOf(v: View, name: String): Any? = runCatching {
-        var c: Class<*>? = v.javaClass
-        while (c != null && c != View::class.java) {
-            val f = runCatching { c.getDeclaredField(name) }.getOrNull()
-            if (f != null) {
-                f.isAccessible = true
-                return@runCatching f.get(v)
-            }
-            c = c.superclass
-        }
-        null
-    }.getOrNull()
-
-    /** 锁屏通知列表自己的滚动量（像素），读不到时为 null。 */
-    private fun stackScrollPx(stack: View): Float? {
-        // 这台机器上列表把滚动量记在 mOwnScrollY（真机读出来的），别的
-        // 版本叫 mCurrentScrollY 或有个 getCurrentScrollY。一个都读不到的机器上返回 null，
-        // 由 listScrolledAway 退回“还能不能往上滚”。
-        for (name in SCROLL_FIELDS) (fieldOf(stack, name) as? Number)?.let { return it.toFloat() }
-        return runCatching { (Xp.callMethod(stack, "getCurrentScrollY") as? Number)?.toFloat() }
-            .getOrNull()
-    }
-
-    /** 列表滚动状态的读数，一行，给 `op mini` 的触摸日志看这一次下拉判的是什么。 */
-    private fun listScrollWhy(): String {
-        val stack = notificationStack() ?: return "no stack"
-        return "scroll=" + stackScrollPx(stack) +
-            " canUp=" + stackCanScrollUp(stack) +
-            " scrolledAway=" + listScrolledAway()
-    }
-
-
     /** The lock screen's notification stack, found once in the window. */
     private fun notificationStack(): ViewGroup? {
         (stackRef?.get() as? ViewGroup)?.takeIf { it.isAttachedToWindow }?.let { return it }
@@ -7947,8 +7822,10 @@ private class MiniPlayerController(
         view.setToggleFace(primary?.let { buttonFace(it, note.timer) })
         view.setSecondFace(second?.let { buttonFace(it, note.timer) })
         view.bind(
-            note.timer?.text() ?: note.title.toString().ifBlank { appLabel(note.pkg) },
-            note.text.toString(),
+            // 焦点通知的文字带着样式（LockIslands.html 解析出来的），这里原样交给行，
+            // 不再摊平成字符串。
+            note.timer?.text() ?: note.title.takeUnless { it.isBlank() } ?: appLabel(note.pkg),
+            note.text,
             noteBitmap(note),
             false,
             config,

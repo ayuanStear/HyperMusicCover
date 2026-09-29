@@ -214,8 +214,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     }
 
     fun bind(
-        trackTitle: String,
-        trackArtist: String,
+        trackTitle: CharSequence,
+        trackArtist: CharSequence,
         cover: Bitmap?,
         playing: Boolean,
         config: JSONObject,
@@ -254,8 +254,14 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             updateGeometry(config.getDouble(MiniPlayerConfig.HEIGHT_RADIUS).toFloat(),
                 config.getDouble(MiniPlayerConfig.ART_RADIUS).toFloat())
         }
-        if (title.text.toString() != trackTitle) title.text = trackTitle
-        if (artist.text.toString() != trackArtist) artist.text = trackArtist
+        // 按字比，不带样式比：行里被换成带样式文字以后，不该每一帧都重设一遍。
+        if (!TextUtils.equals(title.text, trackTitle)) title.text = trackTitle
+        if (!TextUtils.equals(artist.text, trackArtist)) artist.text = trackArtist
+        // 没有字的行不占位置，剩下的一行由列自己居中：模板只给了计时器的那种焦点通知（录音
+        // 机的，param_v2 里只有 animTextInfo）原来把它画在上面那一行，看着偏上（用户
+        // 2026-09-28）。两行都有字时布局和以前一模一样。
+        title.visibility = if (trackTitle.isNullOrBlank()) View.GONE else View.VISIBLE
+        artist.visibility = if (trackArtist.isNullOrBlank()) View.GONE else View.VISIBLE
         if (lastArtwork !== cover) {
             lastArtwork = cover
             if (artworkOverride == null) artwork.setImageBitmap(cover)

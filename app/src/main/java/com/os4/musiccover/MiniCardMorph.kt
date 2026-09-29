@@ -112,6 +112,8 @@ internal class MiniCardMorph(
         val ownColor = (view as? TextView)?.currentTextColor ?: 0
         val ownText: CharSequence? = (view as? TextView)?.text
         var tookText = false
+        /** 卡片上的话放不进这一行；不是每帧都再试一次。 */
+        var textRefused = false
     }
 
     private val motion = CoverMorphMotion()
@@ -516,9 +518,21 @@ internal class MiniCardMorph(
                     val nt = n as TextView
                     val colour = androidx.core.graphics.ColorUtils.blendARGB(piece.ownColor, nt.currentTextColor, mix)
                     if (tv.currentTextColor != colour) tv.setTextColor(colour)
-                    if (mix >= 0.5f && !android.text.TextUtils.equals(tv.text, nt.text)) {
-                        tv.text = nt.text
-                        piece.tookText = true
+                    if (mix >= 0.5f && !piece.textRefused &&
+                        !android.text.TextUtils.equals(tv.text, nt.text)) {
+                        // 要的是那些字，不是卡片那个 text 对象：那是按卡片的字号、字重和断行
+                        // 量好的 PrecomputedText，setText 到度量不同的 TextView 上会抛异常 -
+                        // 而且是在帧回调里抛，整个 SystemUI 会跟着挂掉（上游 #11，2026-09-26）。
+                        val words = nt.text
+                        val copy = if (words is android.text.Spanned) android.text.SpannedString(words)
+                            else words.toString()
+                        try {
+                            tv.text = copy
+                            piece.tookText = true
+                        } catch (t: IllegalArgumentException) {
+                            piece.textRefused = true
+                            Xp.log("MCMini: morph kept its own words: $t")
+                        }
                     }
                 }
             }
