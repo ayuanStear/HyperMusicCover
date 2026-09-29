@@ -1285,6 +1285,14 @@ object MiniPlayerRuntime {
     @JvmStatic fun rowTree(match: String): String =
         live().firstOrNull()?.rowTree(match) ?: "no controller"
 
+    /** For the debug op `trace`: the live controllers' frames, landing ring then scene ring. */
+    @JvmStatic fun traceDump(grep: String?, n: Int): String =
+        live().joinToString("\n\n") { it.traceDump(grep, n) }.ifEmpty { "no controller" }
+
+    /** For the debug op `geo`: the islands as they are drawn right now, one short line. */
+    @JvmStatic fun geometry(): String =
+        live().joinToString(" || ") { it.geometry() }.ifEmpty { "no controller" }
+
     /** For `op mini`: the pill, the card, and the torch button's chain as they are right now. */
     @JvmStatic fun describe(): String {
         val sb = StringBuilder("material=$cardEffect calls=${cardRecipe?.size} empty=$emptyEffect " +
@@ -3162,13 +3170,10 @@ private class MiniPlayerController(
         if (musicController() == null || noteMorphKey != null || flight != null ||
             exchange != null) return null
         // One morph at a time, and one group. A second one started from inside the first - the
-        // cover entry answering the suppression the first had just dropped (2026-09-27) - left two
-        // morphs over the same card, the artwork's push dropped as stale, and the card's own title
-        // and artist faded out by one of them and put back by neither.
-        if (morph != null || group != null) {
-            trace("group refused: a ${if (morph != null) "morph" else "group"} is already running")
-            return null
-        }
+        // A morph already running is turned round, not refused: upstream's transition aims the one
+        // it has (MiniCardMorph.aim) and the capsule island springs into its card from where it is.
+        // Refusing it here left the switch to happen in place - the card popped in from under the
+        // row instead of springing out of the capsule (2026-09-29).
         if (toNative && selectedIsland != MUSIC_ISLAND && smallKey != MUSIC_ISLAND) return null
         endSwap()
         endRow()
@@ -7345,6 +7350,56 @@ private class MiniPlayerController(
     }
     fun nativeHeaderHidden(): Boolean = nativeSuppressionRequested
     fun visibleHeightDp(): Float = configuredHeightDp
+
+    /**
+     * The frames this controller has traced, for the debug op `trace`: the landing ring first, then
+     * the scene ring, both filtered by [grep] and cut to their last [n] lines (0 keeps all of it).
+     * `op mini` carries the same rings, but its answer is long enough that the tail - which is
+     * where the frames just filmed are - does not survive the binder reply.
+     */
+    fun traceDump(grep: String?, n: Int): String {
+        val lines = ArrayList<String>(landTrace.size + sceneTrace.size)
+        lines += landTrace
+        lines += sceneTrace
+        val kept = if (grep.isNullOrEmpty()) lines else lines.filter { it.contains(grep) }
+        val cut = if (n > 0) kept.takeLast(n) else kept
+        return cut.joinToString("\n")
+    }
+
+    /**
+     * For the debug op `geo`: where the pill, the small island, the media card and every mover of a
+     * running switch are drawn this frame - short enough to poll every 40ms. `op mini` carries the
+     * same boxes but answers with 250KB, one read outlasting the animation it samples.
+     */
+    fun geometry(): String {
+        val v = player ?: return "no pill"
+        val xy = IntArray(2).also(v::getLocationOnScreen)
+        val sb = StringBuilder("pill v=${v.visibility}@${xy[0]},${xy[1]} ${v.width}x${v.height} " +
+            "ty=${v.translationY.toInt()} sw=${swap?.smallMode ?: -1}")
+        smallIsland?.let { s ->
+            val sx = IntArray(2).also(s::getLocationOnScreen)
+            sb.append(" small v=${s.visibility}@${sx[0]},${sx[1]} ${s.width}x${s.height}")
+        }
+        exchange?.let { x ->
+            x.movers.values.forEach { m ->
+                val mv = m.view
+                val mx = IntArray(2).also(mv::getLocationOnScreen)
+                sb.append(" mv[${m.key.takeLast(6)}]@${mx[0]},${mx[1]} ${mv.width}x${mv.height}" +
+                    " p=${"%.2f".format(m.morph?.progress ?: -1f)}" +
+                    " cardAt=${m.cardAt.toInt()} homeAt=${m.homeAt?.toInt()} settle=${m.settleAt.toInt()}")
+            }
+        }
+        transitionHeader()?.let { h ->
+            val hx = IntArray(2).also(h::getLocationOnScreen)
+            sb.append(" card v=${h.visibility}@${hx[0]},${hx[1]} ${h.width}x${h.height}" +
+                " ty=${h.translationY.toInt()} a=${"%.2f".format(h.alpha)}")
+        }
+        swap?.let { s ->
+            sb.append(" swap from=${s.pillFrom.x.toInt()},${s.pillFrom.y.toInt()}" +
+                " to=${s.pillTo.x.toInt()},${s.pillTo.y.toInt()} v=${"%.2f".format(s.spring.value)}")
+        }
+        return sb.toString()
+    }
 
     fun transitionActive(): Boolean = morph != null
     /**

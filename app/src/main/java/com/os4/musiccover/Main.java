@@ -3011,6 +3011,13 @@ public class Main extends XposedModule {
                         dumpInk();
                     } else if ("mini".equals(op)) {
                         setResultData(MiniPlayerRuntime.describe());
+                    } else if ("trace".equals(op)) {
+                        // 逐帧轨迹：landing 环 + scene 环，--es grep 过滤，--ei n 截断（0 全部）。
+                        setResultData(MiniPlayerRuntime.traceDump(i.getStringExtra("grep"),
+                                i.getIntExtra("n", 0)));
+                    } else if ("geo".equals(op)) {
+                        // 当前各岛的绘制框（胶囊岛/小岛/卡片/移动体），够短可以高频轮询。
+                        setResultData(MiniPlayerRuntime.geometry());
                     } else if ("rowtree".equals(op)) {
                         String key = i.getStringExtra("key");
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));
