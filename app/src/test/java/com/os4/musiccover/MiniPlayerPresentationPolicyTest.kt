@@ -68,6 +68,48 @@ class MiniPlayerPresentationPolicyTest {
         assertTrue(selection.nativeRequestedFor(replacement))
     }
 
+    @Test fun nativeChoiceSurvivesReplacementTokenUntilItsPackageArrives() {
+        val selection = MiniPlayerSessionSelection()
+        val first = Any()
+        val replacement = Any()
+
+        selection.observe(first, "player")
+        selection.requestNative(first)
+        selection.observe(replacement, "")
+
+        // The replacement token is provisional while the framework has not filled its package.
+        assertTrue(selection.nativeRequestedFor(replacement))
+        selection.observe(replacement, "player")
+        assertTrue(selection.nativeRequestedFor(replacement))
+    }
+
+    @Test fun provisionalNativeChoiceIsClearedWhenReplacementBelongsToAnotherPackage() {
+        val selection = MiniPlayerSessionSelection()
+        val first = Any()
+        val replacement = Any()
+
+        selection.observe(first, "player")
+        selection.requestNative(first)
+        selection.observe(replacement, "")
+        selection.observe(replacement, "another.player")
+
+        assertFalse(selection.nativeRequestedFor(replacement))
+    }
+
+    @Test fun sameSessionLearnsPackageNameWhenItArrivesLate() {
+        val selection = MiniPlayerSessionSelection()
+        val session = Any()
+
+        // A MediaController token can be observed before the framework fills packageName.
+        selection.observe(session, "")
+        selection.requestNative(session)
+
+        assertTrue(selection.nativeRequestedFor(session))
+        // The later package callback should enrich the same token, not reset the choice.
+        selection.observe(session, "player")
+        assertTrue(selection.nativeRequestedFor(session))
+    }
+
     @Test fun nativeChoiceSurvivesSessionEndAndReplacementBySamePackage() {
         val selection = MiniPlayerSessionSelection()
         val first = Any()
@@ -118,6 +160,14 @@ class MiniPlayerPresentationPolicyTest {
         assertTrue(selection.nativeRequestedFor(session))
         selection.end(session)
         assertFalse(selection.nativeRequestedFor(session))
+    }
+
+    @Test fun sessionGraceKeepsTheSameTemporarilyUnavailableControllerPresent() {
+        val session = Any()
+        assertTrue(sessionUsableDuringGrace(false, session, session))
+        assertTrue(sessionUsableDuringGrace(true, session, null))
+        assertFalse(sessionUsableDuringGrace(false, session, null))
+        assertFalse(sessionUsableDuringGrace(false, session, Any()))
     }
 
     @Test fun temporarySceneOcclusionNeverHidesBothPlayers() {

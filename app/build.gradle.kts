@@ -32,8 +32,8 @@ android {
         applicationId = "com.os4.musiccover"
         minSdk = 35
         targetSdk = 37
-        versionCode = (findProperty("mcVersionCode") as String?)?.toInt() ?: 5
-        versionName = ((findProperty("mcVersionName") as String?) ?: "0.0.4") +
+        versionCode = (findProperty("mcVersionCode") as String?)?.toInt() ?: 7
+        versionName = ((findProperty("mcVersionName") as String?) ?: "0.0.6") +
                 ((findProperty("mcVersionSuffix") as String?) ?: "")
     }
 

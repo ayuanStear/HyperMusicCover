@@ -2752,7 +2752,7 @@ private class MiniPlayerController(
         if (view.layoutParams.width != w || view.layoutParams.height != h) {
             view.layoutParams = view.layoutParams.apply { width = w; height = h }
         }
-        val music = controller?.takeIf(::isUsable)
+        val music = musicController()
         val note = if (key == MUSIC_ISLAND) null
             else LockIslands.notes.firstOrNull { it.key == key } ?: LockIslands.noteFor(key)
         when {
@@ -3101,7 +3101,7 @@ private class MiniPlayerController(
 
     private fun prepareGroupUnsafe(native: View, toNative: Boolean): MiniCardMorph? {
         val view = player ?: return null
-        if (controller?.takeIf(::isUsable) == null || noteMorphKey != null || flight != null ||
+        if (musicController() == null || noteMorphKey != null || flight != null ||
             exchange != null) return null
         // One morph at a time, and one group. A second one started from inside the first - the
         // cover entry answering the suppression the first had just dropped (2026-09-27) - left two
@@ -3184,7 +3184,7 @@ private class MiniPlayerController(
      */
     private fun prepareSmallView(key: String, pooled: Boolean = false): MiniPlayerView? {
         val pill = player ?: return null
-        val music = controller?.takeIf(::isUsable)
+        val music = musicController()
         val note = if (key == MUSIC_ISLAND) null
             else LockIslands.notes.firstOrNull { it.key == key } ?: LockIslands.noteFor(key)
         if (if (key == MUSIC_ISLAND) music == null else note == null) return null
@@ -4002,7 +4002,7 @@ private class MiniPlayerController(
 
     /** There are islands other than the music's, in the row or out as their rows. */
     private fun othersBesideMusic(): Boolean {
-        if (controller?.takeIf(::isUsable) == null) return false
+        if (musicController() == null) return false
         // A notification out as its row counts: the music going out takes its place.
         return LockIslands.notes.isNotEmpty() || islandKeys.any { it != MUSIC_ISLAND } ||
             LockIslands.releasedKeys().any { rowFor(it) != null }
@@ -4061,7 +4061,7 @@ private class MiniPlayerController(
 
     /** The music is out as the media card, the row holding the others. */
     private fun musicCarded(): Boolean {
-        val token = controller?.takeIf(::isUsable)?.sessionToken ?: return false
+        val token = musicController()?.sessionToken ?: return false
         return MiniPlayerRuntime.nativeRequested(token) && MUSIC_ISLAND !in islandKeys
     }
 
@@ -4077,7 +4077,7 @@ private class MiniPlayerController(
         if (musicCarded()) return MUSIC_ISLAND
         // The cover is the music's card: another island opened there takes its place, and the
         // cover goes (2026-09-25) - not a row of its own in the cover's stack beside the card.
-        if (Main.coverModeOn() && MUSIC_ISLAND !in islandKeys && controller?.takeIf(::isUsable) != null) {
+        if (Main.coverModeOn() && MUSIC_ISLAND !in islandKeys && musicController() != null) {
             return MUSIC_ISLAND
         }
         return LockIslands.releasedKeys().firstOrNull { it != noteMorphKey && rowFor(it) != null }
@@ -4769,6 +4769,8 @@ private class MiniPlayerController(
         var pendingPill = false
         var pendingCover = false
         var waitSince = 0L
+        /** The native media card hidden while a notification row is being laid out. */
+        var hiddenMediaCard: View? = null
         fun has(key: String) = key == expanded || key in movers || key == pending
         fun keys(): List<String> = listOfNotNull(expanded) + movers.keys + listOfNotNull(pending)
         fun homeKeys(): List<String> = movers.values.filter { it.headedHome }.map { it.key }
@@ -4846,6 +4848,18 @@ private class MiniPlayerController(
         } else {
             letOut(key)
             if (key == STACK_ISLAND) showStackAsList("switch")
+        }
+        // The notification row can take several frames to return after pipeline invalidation.
+        // The pill is already visible for the exchange, so hand the media card to it now rather
+        // than showing a full media card beside a full notification while switchWait runs.
+        // applyUp/sendDown restores the header synchronously just before its morph starts; the
+        // existing timeout path restores it if the notification row never becomes usable.
+        if (!cover && key != MUSIC_ISLAND && x.expanded == MUSIC_ISLAND) {
+            transitionHeader()?.takeIf { it !in hiddenRows }?.let { header ->
+                hideRow(header)
+                x.hiddenMediaCard = header
+            }
+            MiniPlayerRuntime.noteTouch("exchange media card hidden while waiting for ${key.takeLast(6)}")
         }
         refresh()
         trace("switch ask ${key.takeLast(6)} pill=$fromPill out=${x.expanded?.takeLast(6)} " + smallState())
@@ -5086,6 +5100,9 @@ private class MiniPlayerController(
                 abandonMover(x, key)
                 return false
             }
+            // requestUp hides the expanded media card during switchWait so the pill can take
+            // over immediately. Restore its native alpha just before this morph snapshots it.
+            if (out == MUSIC_ISLAND) restoreSwitchMediaCard(x)
             val m = Mover(out, view, native)
             m.fromCard = true
             m.cover = out == MUSIC_ISLAND && Main.coverModeOn()
@@ -5289,6 +5306,12 @@ private class MiniPlayerController(
         if (key == MUSIC_ISLAND && !wasOut) {
             MiniPlayerRuntime.forgetRestoreScene()
             Main.miniPlayerEnterCover()
+            // This route starts the same scene entry as openCover(), but it is reached while
+            // another island is being exchanged and therefore used to miss the explicit native
+            // selection. Record it only after the transition has been started; beginTransition
+            // intentionally skips a scene morph when native is already selected.
+            controller?.sessionToken?.let(MiniPlayerRuntime::chooseNative)
+            MiniPlayerRuntime.refresh()
         }
     }
 
@@ -5333,6 +5356,15 @@ private class MiniPlayerController(
             expandedKey()?.let { it != MUSIC_ISLAND } == true -> startExchange(MUSIC_ISLAND, toCover = true)
         }
         Main.miniPlayerEnterCover()
+        // Tapping the capsule is an explicit choice of the full media card. The cover transition
+        // must be started before recording it: beginTransition(scene = true) deliberately skips
+        // a transition when the native choice is already set. Once the tap has opened the card,
+        // keep that choice across metadata updates and a player session replacement, so changing
+        // or pausing the song cannot silently put the user back in the capsule.
+        controller?.sessionToken?.let { token ->
+            MiniPlayerRuntime.chooseNative(token)
+            MiniPlayerRuntime.refresh()
+        }
     }
 
     /**
@@ -5350,6 +5382,7 @@ private class MiniPlayerController(
     private fun abandonMover(x: Switch, key: String) {
         flushTurn(key)
         x.expanded?.let(::flushTurn)
+        restoreSwitchMediaCard(x)
         // It was given back for the other's sake: out again as it was.
         x.expanded?.takeIf { it !in x.movers }?.let(::letOutAgain)
         // The card that was to come down stays where it was held, while the row that was let out
@@ -5373,6 +5406,11 @@ private class MiniPlayerController(
             exchange = null
             refresh()
         }
+    }
+
+    private fun restoreSwitchMediaCard(x: Switch) {
+        x.hiddenMediaCard?.let(::showRow)
+        x.hiddenMediaCard = null
     }
 
     /**
@@ -5685,7 +5723,7 @@ private class MiniPlayerController(
     }
 
     private fun prepareFlight(key: String): MiniPlayerView? { android.os.Trace.beginSection("MC prepareFlight"); try {
-        val music = if (key == MUSIC_ISLAND) controller?.takeIf(::isUsable) ?: return null else null
+        val music = if (key == MUSIC_ISLAND) musicController() ?: return null else null
         val note = if (music == null) LockIslands.noteFor(key) ?: return null else null
         val pill = player ?: return null
         // One kept from an earlier flight or switch when there is one: made new, a flight cost
@@ -6836,11 +6874,13 @@ private class MiniPlayerController(
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         runCatching { host.viewTreeObserver.removeOnPreDrawListener(preDraw) }
         runCatching { sessions?.removeOnActiveSessionsChangedListener(sessionListener) }
+        Choreographer.getInstance().removeFrameCallback(switchWait)
         handler.removeCallbacks(pendingSessionEnd)
         pendingSessionEndToken = null
         runCatching { controller?.unregisterCallback(mediaListener) }
         followLive(null)
         morph?.cancel()
+        hiddenRows.keys.toList().forEach(::showRow)
         restoreHeader()
         removeDiscs()
         LockIslands.removeListener(islandListener)
@@ -7380,6 +7420,7 @@ private class MiniPlayerController(
             player?.visibility = View.GONE
             hideSmallIsland()
             LockIslands.setActive(false)
+            transitionHeader()?.let(::showRow)
             restoreHeader()
             return
         }
@@ -7409,7 +7450,14 @@ private class MiniPlayerController(
                 lastTrack = ""
             }
         }
-        val music = controller?.takeIf(::isUsable)
+        val music = musicController()
+        // Observe the controller before deriving carded/islandKeys. A player may replace its
+        // MediaSession while advancing a track. If the presentation is calculated first, the
+        // replacement token has no recorded choice yet and this refresh can classify an
+        // explicitly opened card as the capsule. The old implementation also observed only
+        // after the notification-morph early return, so a concurrent notification transition
+        // could leave the replacement session in the default capsule state indefinitely.
+        if (music != null) trackMusic(music)
         val notes = LockIslands.notes
         // One island out as its card, the rest in the row (the super island's expanded state):
         // the music out as the media card leaves the row to the notifications. Alone, it keeps
@@ -7476,7 +7524,6 @@ private class MiniPlayerController(
             player = it
             host.addView(it, lockScreenLayerIndex(), ViewGroup.LayoutParams(1, 1))
         }
-        if (music != null) trackMusic(music)
         // A notification let out and on its way home to the pill is not among the notes yet - nor
         // for a run of the pipeline after it has landed (returning). Looked up in the notes
         // alone, the pill took the music for those frames: the music flashed in the pill right
@@ -8188,6 +8235,11 @@ private class MiniPlayerController(
         else -> false
     }
 
+    /** Keep the same session's music island available while a temporary playback-state gap settles. */
+    private fun musicController(): MediaController? = controller?.takeIf {
+        sessionUsableDuringGrace(isUsable(it), it.sessionToken, pendingSessionEndToken)
+    }
+
     private fun updateVisibility() { android.os.Trace.beginSection("MC updateVisibility"); try {
         val view = player
         val config = this.config
@@ -8515,6 +8567,12 @@ private class MiniPlayerController(
     private fun position() {
         val view = player ?: return
         if (view.visibility != View.VISIBLE) return
+        // A switch has just invalidated the notification stack and is waiting for the tapped row
+        // to be laid out.  Keep the pill at the frame it had before that invalidation: changing
+        // its rest size here starts the row spring while switchWait is still pending, producing a
+        // transient full-width capsule before applyUp/seatAtRest can take over the animation.
+        // Once pending is cleared, applyUp (or the timeout/abandon path) schedules position again.
+        if (exchange?.pending != null) return
         val small = smallKey != null
         val rest = pillRest(small) ?: run {
             // The host itself has no size yet - a SystemUI that has just started, with the pill

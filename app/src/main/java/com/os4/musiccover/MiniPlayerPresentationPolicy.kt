@@ -20,6 +20,17 @@ internal data class MiniPlayerPresentation(
     val suppressNative: Boolean,
 )
 
+/**
+ * A media session can briefly report STATE_NONE while a player replaces its session (for
+ * example, while advancing to the next track).  The runtime keeps that same controller alive
+ * for a short grace period; during that period it must still count as the music island's source.
+ */
+internal fun sessionUsableDuringGrace(
+    usable: Boolean,
+    sessionToken: Any?,
+    pendingEndToken: Any?,
+): Boolean = usable || sessionToken != null && sessionToken == pendingEndToken
+
 /** Keeps scene visibility separate from the user's selected media presentation. */
 internal object MiniPlayerPresentationPolicy {
     fun evaluate(input: MiniPlayerPresentationInput): MiniPlayerPresentation {
@@ -45,24 +56,41 @@ internal object MiniPlayerPresentationPolicy {
 internal class MiniPlayerSessionSelection {
     private var sessionToken: Any? = null
     private var sessionPackage: String? = null
+    /** Known package expected if the current replacement token has not exposed one yet. */
+    private var provisionalPackage: String? = null
     private var nativeRequested = false
     private var retainedPackage: String? = null
     private var retainedNativeRequested = false
 
-    fun observe(token: Any): Boolean = observe(token, sessionPackage ?: "")
+    fun observe(token: Any): Boolean = observe(token,
+        if (sessionToken == token) sessionPackage.orEmpty() else "")
 
     /** A player may recreate its session while advancing a queue; keep its explicit choice. */
     fun observe(token: Any, packageName: String): Boolean {
-        if (sessionToken == token) return false
-        val keepChoice = when {
-            nativeRequested && packageName.isNotEmpty() && sessionPackage == packageName -> true
-            sessionToken == null && packageName.isNotEmpty() && retainedPackage == packageName ->
-                retainedNativeRequested
-            else -> false
+        if (sessionToken == token) {
+            // MediaController can expose the token before its package name is populated. Learn
+            // the package on the next callback. A replacement inherits the old choice only
+            // provisionally until this confirms that it belongs to the same player.
+            if (sessionPackage.isNullOrEmpty() && packageName.isNotEmpty()) {
+                if (nativeRequested && provisionalPackage != null && provisionalPackage != packageName) {
+                    nativeRequested = false
+                }
+                sessionPackage = packageName
+                provisionalPackage = null
+            }
+            return false
         }
+        val expectedPackage = when {
+            sessionToken != null && nativeRequested -> sessionPackage
+            sessionToken == null && retainedNativeRequested -> retainedPackage
+            else -> null
+        }?.takeIf { it.isNotEmpty() }
+        val keepChoice = expectedPackage != null &&
+            (packageName.isEmpty() || packageName == expectedPackage)
         sessionToken = token
         sessionPackage = packageName
         nativeRequested = keepChoice
+        provisionalPackage = expectedPackage.takeIf { keepChoice && packageName.isEmpty() }
         retainedPackage = null
         retainedNativeRequested = false
         return true
@@ -70,21 +98,25 @@ internal class MiniPlayerSessionSelection {
 
     fun requestNative(token: Any): Boolean {
         val sessionChanged = observe(token)
-        if (nativeRequested) return sessionChanged
+        val changed = !nativeRequested
         nativeRequested = true
-        return true
+        // An explicit selection on this token supersedes provisional inheritance.
+        provisionalPackage = null
+        return sessionChanged || changed
     }
 
     fun requestMini(token: Any): Boolean {
         val sessionChanged = observe(token)
-        if (!nativeRequested) return sessionChanged
+        val changed = nativeRequested
         nativeRequested = false
-        return true
+        provisionalPackage = null
+        return sessionChanged || changed
     }
 
     fun resetChoice(): Boolean {
         val changed = nativeRequested || retainedPackage != null && retainedNativeRequested
         nativeRequested = false
+        provisionalPackage = null
         retainedPackage = null
         retainedNativeRequested = false
         return changed
@@ -92,10 +124,11 @@ internal class MiniPlayerSessionSelection {
 
     fun end(token: Any): Boolean {
         if (sessionToken != token) return false
-        retainedPackage = sessionPackage
+        retainedPackage = provisionalPackage ?: sessionPackage
         retainedNativeRequested = nativeRequested
         sessionToken = null
         sessionPackage = null
+        provisionalPackage = null
         nativeRequested = false
         return true
     }
