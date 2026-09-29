@@ -32,3 +32,9 @@ local.properties
 # was tried, device quirks, and round-by-round debugging history. For whoever (whatever)
 # picks this up next, not for the repo's readers.
 /.workbuddy/
+
+
+# 本地构建环境（沙箱里为了绕开 C 盘限制放在这里的 Gradle/SDK 缓存）与临时目录
+/.build/
+/.kotlin/
+/.codex-wt/

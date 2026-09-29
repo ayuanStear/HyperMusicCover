@@ -141,6 +141,9 @@ internal class MiniCardMorph(
     private var transitionToken: MusicTransitionToken? = ownerToken
     private var running = false
 
+    /** Still being stepped every frame: 通知岛那边看它还有没有人在推（pileWatch）。 */
+    val isRunning: Boolean get() = running
+
     /**
      * The card is put at its box again right before the frame is drawn, against the transform
      * the stack has given it by then: the stack's animator writes translationY later in the same

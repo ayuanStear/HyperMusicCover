@@ -3016,6 +3016,11 @@ public class Main extends XposedModule {
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));
                     } else if ("fold".equals(op)) {
                         setResultData(describeFold());
+                    } else if ("nscroll".equals(op)) {
+                        // 通知列表自己的滚动位置：下拉是列表的还是通知岛的，这一行说明白。
+                        String s = MiniPlayerRuntime.listScrollProbe();
+                        setResultData(s);
+                        Xp.log(TAG + "nscroll " + s);
                     } else if ("keepawake".equals(op)) {
                         // --ez on true|false: the lock screen held lit for a test run.
                         setResultData(keepAwake(i.getBooleanExtra("on", true)));
