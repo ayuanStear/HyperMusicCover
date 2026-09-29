@@ -56,6 +56,70 @@ class MiniPlayerPresentationPolicyTest {
         assertFalse(selection.nativeRequestedFor(second))
     }
 
+    @Test fun nativeChoiceSurvivesSessionRecreationBySamePackage() {
+        val selection = MiniPlayerSessionSelection()
+        val first = Any()
+        val replacement = Any()
+
+        selection.observe(first, "player")
+        selection.requestNative(first)
+        selection.observe(replacement, "player")
+
+        assertTrue(selection.nativeRequestedFor(replacement))
+    }
+
+    @Test fun nativeChoiceSurvivesSessionEndAndReplacementBySamePackage() {
+        val selection = MiniPlayerSessionSelection()
+        val first = Any()
+        val replacement = Any()
+
+        selection.observe(first, "player")
+        selection.requestNative(first)
+        selection.end(first)
+        selection.observe(replacement, "player")
+
+        assertTrue(selection.nativeRequestedFor(replacement))
+    }
+
+    @Test fun miniChoiceAlsoSurvivesSessionEndWithoutTurningNative() {
+        val selection = MiniPlayerSessionSelection()
+        val first = Any()
+        val replacement = Any()
+
+        selection.observe(first, "player")
+        selection.requestMini(first)
+        selection.end(first)
+        selection.observe(replacement, "player")
+
+        assertFalse(selection.nativeRequestedFor(replacement))
+    }
+
+    @Test fun sessionRecreationByAnotherPackageResetsNativeChoice() {
+        val selection = MiniPlayerSessionSelection()
+        val first = Any()
+        val replacement = Any()
+
+        selection.observe(first, "player")
+        selection.requestNative(first)
+        selection.observe(replacement, "another.player")
+
+        assertFalse(selection.nativeRequestedFor(replacement))
+    }
+
+    @Test fun dynamicChoiceSurvivesAControllerGapUntilTheSessionActuallyEnds() {
+        val selection = MiniPlayerSessionSelection()
+        val session = Any()
+
+        selection.requestNative(session)
+        // A track transition can temporarily make the controller unusable. The runtime's grace
+        // period leaves the selection untouched during that gap.
+        selection.observe(session)
+
+        assertTrue(selection.nativeRequestedFor(session))
+        selection.end(session)
+        assertFalse(selection.nativeRequestedFor(session))
+    }
+
     @Test fun temporarySceneOcclusionNeverHidesBothPlayers() {
         val aodOrControlCenter = presentation(sceneVisible = false)
 

@@ -12,5 +12,4 @@
         record that can only ever answer wrong.
     -->
     <!-- Which download host answered last time: a fact about this device's network. -->
-    <exclude domain="sharedpref" path="update_source.xml"/>
 </full-backup-content>

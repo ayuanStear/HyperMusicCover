@@ -57,10 +57,10 @@
 #       Darwin, MinGW, and NonStop.
 #
 #   (3) This script is generated from the Groovy template
-#       https://github.com/gradle/gradle/blob/3d91ce3b8caaf77ad09f381f43615b715b53f72c/platforms/jvm/plugins-application/src/main/resources/org/gradle/api/internal/plugins/unixStartScript.txt
+#       Gradle's generated Unix start script template.
 #       within the Gradle project.
 #
-#       You can find Gradle at https://github.com/gradle/gradle/.
+#       You can find Gradle at https://gradle.org/.
 #
 ##############################################################################
 
@@ -85,7 +85,7 @@ done
 # This is normally unused
 # shellcheck disable=SC2034
 APP_BASE_NAME=${0##*/}
-# Discard cd standard output in case $CDPATH is set (https://github.com/gradle/gradle/issues/25036)
+# Discard cd standard output in case $CDPATH is set.
 APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s\n' "$PWD" ) || exit
 
 # Use the maximum available, or set MAX_FD != -1 to use that value.

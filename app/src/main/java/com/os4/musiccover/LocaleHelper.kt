@@ -1,5 +1,5 @@
 /*
- * Adapted from HyperNavBar (https://github.com/HyperNavBar/HyperNavBar),
+ * Adapted from HyperNavBar,
  * licensed under the Apache License, Version 2.0.
  *
  * Changes in HyperMusicCover: package renamed, project links and strings replaced,

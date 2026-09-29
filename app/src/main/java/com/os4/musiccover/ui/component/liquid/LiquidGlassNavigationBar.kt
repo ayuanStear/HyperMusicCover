@@ -1,5 +1,5 @@
 /*
- * Adapted from HyperNavBar (https://github.com/HyperNavBar/HyperNavBar),
+ * Adapted from HyperNavBar,
  * licensed under the Apache License, Version 2.0.
  *
  * Changes in HyperMusicCover: package renamed, project links and strings replaced,
@@ -10,7 +10,7 @@
 
 package com.os4.musiccover.ui.component.liquid
 
-// Adapted from Kyant0/AndroidLiquidGlass — https://github.com/Kyant0/AndroidLiquidGlass (Apache 2.0).
+// Adapted from Kyant0/AndroidLiquidGlass (Apache 2.0).
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut

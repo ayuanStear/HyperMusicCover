@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import com.os4.musiccover.ui.component.PagerNavigationSpringSpec
 import com.os4.musiccover.ui.component.liquid.IosLiquidGlassNavigationBar
 import com.os4.musiccover.ui.screen.about.AboutPageContent
-import com.os4.musiccover.updater.UpdateCheck
 import com.os4.musiccover.ui.screen.features.FeaturesPageView
 import com.os4.musiccover.ui.screen.home.HomePageView
 import com.os4.musiccover.ui.screen.settings.SettingsPageView
@@ -172,12 +171,6 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(surface, themeMode) {
                     LaunchBackground.remember(this@MainActivity, themeMode.name, surface.toArgb())
                     uiReady = true
-                }
-                // The update check belongs to the app starting, not to the About page being
-                // opened - it is the one moment the answer is worth having before anyone goes
-                // looking for it. The About page only reads this.
-                LaunchedEffect(Unit) {
-                    UpdateCheck.refresh(this@MainActivity)
                 }
                 MainScreen(
                     themeMode = themeMode,

@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.os4.musiccover.ui.screen.features.ValueSlider
@@ -49,11 +50,15 @@ private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
     val context = LocalContext.current
     var configText by remember { mutableStateOf(MiniPlayerConfig.defaultJson()) }
     var alive by remember { mutableStateOf(false) }
+    var notificationUnmerge by remember { mutableStateOf(false) }
     val config = remember(configText) { JSONObject(configText) }
     LaunchedEffect(Unit) {
         val reply = ModuleBridge.queryAlive(context)
         alive = reply.alive
-        if (reply.alive) configText = reply.miniConfig
+        if (reply.alive) {
+            configText = reply.miniConfig
+            notificationUnmerge = reply.notificationUnmerge
+        }
     }
     fun push(key: String, value: Any) {
         configText = MiniPlayerConfig.normalizedJson(JSONObject(configText).put(key, value).toString())
@@ -68,6 +73,16 @@ private fun MiniPlayerPage(blur: Boolean, onBack: () -> Unit) {
                         summary = if (alive) "普通锁屏的底部快捷按钮之间显示" else "等待 SystemUI 模块响应",
                         checked = config.optBoolean(MiniPlayerConfig.ENABLED), enabled = alive,
                         onCheckedChange = { push(MiniPlayerConfig.ENABLED, it) })
+                    SwitchPreference(
+                        title = stringResource(R.string.notifications_unmerge),
+                        summary = stringResource(R.string.notifications_unmerge_summary),
+                        checked = notificationUnmerge,
+                        enabled = alive,
+                        onCheckedChange = {
+                            notificationUnmerge = it
+                            ModuleBridge.setNotificationUnmerge(context, it)
+                        },
+                    )
                 }
             }
         }

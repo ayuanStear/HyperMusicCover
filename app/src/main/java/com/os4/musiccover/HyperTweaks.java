@@ -1,5 +1,5 @@
 /*
- * Adapted from HyperChanger (https://github.com/ColdP/HyperChanger),
+ * Adapted from HyperChanger,
  * licensed under the Apache License, Version 2.0.
  *
  * Changes in HyperMusicCover: rewritten against this module's libxposed helpers, every hook made

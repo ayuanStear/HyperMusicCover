@@ -134,6 +134,8 @@ object ModuleBridge {
         val islandMinPx: Int = 0,
         /** The length the system last picked for itself, in pixels; 0 until it has been seen. */
         val islandSystemPx: Int = 0,
+        /** Whether grouped notifications are promoted to separate top-level rows. */
+        val notificationUnmerge: Boolean = false,
         /**
          * The notification-shade settings, keyed exactly as the module's own CFG_KEYS.
          *
@@ -305,6 +307,9 @@ object ModuleBridge {
      */
     fun setIslandLength(context: Context, px: Int) =
         send(context, "islandlen") { putExtra("px", px) }
+
+    fun setNotificationUnmerge(context: Context, on: Boolean) =
+        send(context, "notifmerge") { putExtra("on", on) }
 
     /**
      * One shade setting, by the module's own key.
@@ -559,6 +564,7 @@ object ModuleBridge {
             islandLengthPx = b.getInt("islandlen", 0),
             islandMinPx = b.getInt("islandmin", 0),
             islandSystemPx = b.getInt("islandsys", 0),
+            notificationUnmerge = b.getBoolean("notifunmerge", false),
             shade = b.keySet()
                 .filter { it.startsWith("shade_") }
                 .associate { it.removePrefix("shade_") to b.getInt(it, 0) },

@@ -1,5 +1,5 @@
 /*
- * Adapted from miuix (https://github.com/compose-miuix-ui/miuix), whose
+ * Adapted from miuix, whose
  * PagerNavigationSpringSpec this is - see PagerGestureUtils.kt.
  * Licensed under the Apache License, Version 2.0.
  * Copyright 2025, compose-miuix-ui contributors

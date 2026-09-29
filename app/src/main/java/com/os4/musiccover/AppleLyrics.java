@@ -25,7 +25,7 @@ import io.github.libxposed.api.XposedInterface;
  *
  * The approach - hook the build, and trigger it by handing the player a Song that claims to have
  * lyrics - is Proify and Tomakino's, from LyricProvider's apple-music module (Apache-2.0,
- * github.com/tomakino/LyricProvider). Their reading of Apple's object graph is what this
+ * LyricProvider). Their reading of Apple's object graph is what this
  * reimplements; the code is ours, because their module is a Lyricon provider built on YukiHookAPI
  * and this one has to be a libxposed hook that answers to our own lock screen.
  *

@@ -75,7 +75,7 @@ object LyriconSource {
     private var sAttached = false
 
     /** The package this subscriber registers as - see attach. Our applicationId, so it is unique. */
-    private const val SUBSCRIBER_NAME = "com.github.zyl6932.HyperMusicCover"
+    private const val SUBSCRIBER_NAME = "com.os4.musiccover"
 
     /**
      * Start listening, once, from wherever the process first has a Context.

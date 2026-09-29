@@ -6,7 +6,6 @@
 <data-extraction-rules>
     <cloud-backup>
         <!-- See backup_rules.xml: the updater's bookkeeping is about this device's uptime. -->
-        <exclude domain="sharedpref" path="update_source.xml"/>
     </cloud-backup>
     <device-transfer>
     </device-transfer>

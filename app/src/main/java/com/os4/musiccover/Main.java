@@ -1371,7 +1371,7 @@ public class Main extends XposedModule {
         // drawables, and MiuiGxzwIconView holds the static print underneath. Hiding either one
         // alone leaves the other on screen.
         //
-        // The split is HyperTweak's, read off https://github.com/TakeKazeX/HyperTweak: which of
+        // The split is HyperTweak's: which of
         // these draws what, and that hiding one of the two is not enough. What this phone needed
         // on top of that was measured here rather than taken from anyone - see CLS_FOD_ANIM_VIEW.
         //
@@ -2034,6 +2034,7 @@ public class Main extends XposedModule {
                     + "\nfpavoid=" + sFpAvoid
                     + "\nfpsinkpx=" + sFpSinkPx
                     + "\nislandlen=" + sIslandLenPx
+                     + "\nunmergenotifs=" + (LockIslands.INSTANCE.getUnmergeNotifications() ? 1 : 0)
                     + "\nminicfg=" + android.util.Base64.encodeToString(
                             MiniPlayerRuntime.configJson(sAppCtx).getBytes(java.nio.charset.StandardCharsets.UTF_8),
                             android.util.Base64.NO_WRAP)
@@ -2154,6 +2155,9 @@ public class Main extends XposedModule {
                         else if ("fpavoid".equals(k)) sFpAvoid = Integer.parseInt(v);
                         else if ("fpsinkpx".equals(k)) sFpSinkPx = clampSinkPx(Integer.parseInt(v));
                         else if ("islandlen".equals(k)) sIslandLenPx = clampIslandLenPx(Integer.parseInt(v));
+                         else if ("unmergenotifs".equals(k)) {
+                             LockIslands.INSTANCE.setUnmergeNotifications("1".equals(v));
+                         }
                         else if ("minicfg".equals(k)) MiniPlayerRuntime.applyConfig(sAppCtx,
                                 new String(android.util.Base64.decode(v, android.util.Base64.DEFAULT),
                                         java.nio.charset.StandardCharsets.UTF_8));
@@ -2707,6 +2711,13 @@ public class Main extends XposedModule {
                         Xp.log(TAG + "super island length "
                                 + (sIslandLenPx == 0 ? "system" : sIslandLenPx + "px")
                                 + (IslandLength.installed() ? "" : " (plugin not hooked yet)"));
+                    } else if ("notifmerge".equals(op)) {
+                        boolean on = i.getBooleanExtra("on",
+                                !LockIslands.INSTANCE.getUnmergeNotifications());
+                        LockIslands.INSTANCE.setUnmergeNotifications(on);
+                        saveState();
+                        Xp.log(TAG + "notification grouping "
+                                + (on ? "disabled" : "restored"));
                     } else if ("fadewp".equals(op)) {
                         sFadeWp = i.getBooleanExtra("on", !sFadeWp);
                         saveState();
@@ -2932,6 +2943,8 @@ public class Main extends XposedModule {
                         out.putInt("islandlen", sIslandLenPx);
                         out.putInt("islandmin", sIslandMinPx);
                         out.putInt("islandsys", sIslandSysPx);
+                         out.putBoolean("notifunmerge",
+                                 LockIslands.INSTANCE.getUnmergeNotifications());
                         // Everything the app's preview needs to be to scale. It draws a lock
                         // screen it cannot see, and every one of these is device-specific, so
                         // they are measured here rather than written down twice.

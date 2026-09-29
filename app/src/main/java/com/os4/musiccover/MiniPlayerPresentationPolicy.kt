@@ -35,15 +35,36 @@ internal object MiniPlayerPresentationPolicy {
     }
 }
 
-/** Dynamic-mode choice scoped to one live MediaSession token. */
+/**
+ * Dynamic-mode choice for the current media app.
+ *
+ * A player can destroy and recreate its MediaSession while advancing its queue. The user's
+ * card/pill choice is independent of that implementation detail, so retain it across the gap
+ * and restore it when the same package publishes its replacement session.
+ */
 internal class MiniPlayerSessionSelection {
     private var sessionToken: Any? = null
+    private var sessionPackage: String? = null
     private var nativeRequested = false
+    private var retainedPackage: String? = null
+    private var retainedNativeRequested = false
 
-    fun observe(token: Any): Boolean {
+    fun observe(token: Any): Boolean = observe(token, sessionPackage ?: "")
+
+    /** A player may recreate its session while advancing a queue; keep its explicit choice. */
+    fun observe(token: Any, packageName: String): Boolean {
         if (sessionToken == token) return false
+        val keepChoice = when {
+            nativeRequested && packageName.isNotEmpty() && sessionPackage == packageName -> true
+            sessionToken == null && packageName.isNotEmpty() && retainedPackage == packageName ->
+                retainedNativeRequested
+            else -> false
+        }
         sessionToken = token
-        nativeRequested = false
+        sessionPackage = packageName
+        nativeRequested = keepChoice
+        retainedPackage = null
+        retainedNativeRequested = false
         return true
     }
 
@@ -62,14 +83,19 @@ internal class MiniPlayerSessionSelection {
     }
 
     fun resetChoice(): Boolean {
-        if (!nativeRequested) return false
+        val changed = nativeRequested || retainedPackage != null && retainedNativeRequested
         nativeRequested = false
-        return true
+        retainedPackage = null
+        retainedNativeRequested = false
+        return changed
     }
 
     fun end(token: Any): Boolean {
         if (sessionToken != token) return false
+        retainedPackage = sessionPackage
+        retainedNativeRequested = nativeRequested
         sessionToken = null
+        sessionPackage = null
         nativeRequested = false
         return true
     }

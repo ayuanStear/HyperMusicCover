@@ -1,5 +1,5 @@
 /*
- * Layout adapted from HyperNavBar (https://github.com/HyperNavBar/HyperNavBar),
+ * Layout adapted from HyperNavBar,
  * licensed under the Apache License, Version 2.0.
  *
  * Changes in HyperMusicCover: the status card reports whether the hook answered rather than

@@ -77,7 +77,6 @@
     <string name="credits_hypernavbar">The whole UI scaffolding: theme, floating and liquid-glass navigation bars, background blur, the about page and the locale helper</string>
     <string name="credits_miuix">Every component this interface is built from</string>
     <string name="credits_liquid_glass">The lens, the inner shadow and the vibrancy behind the liquid glass</string>
-    <string name="credits_markdown_css">How the release notes are typeset</string>
     <string name="credits_cialloum">The square cover card, the morph between the thumbnail and the cover, and the lock screen lyric position, size and weight settings</string>
     <string name="credits_hyperchanger">The lock screen super island (ported by btm_m), and lifting the depth, saved-lock-screen, clock colon and global-theme glass restrictions</string>
     <string name="credits_leaf">Video and depth video wallpaper support</string>
@@ -88,7 +87,7 @@
     <string name="credits_lyricinfo">One of the places player lyrics come from</string>
     <string name="credits_hle">QQ Music, Kuwo and TTML Hub lyrics, and the song matching rules</string>
     <string name="credits_lsposed">The framework this module runs in</string>
-    <string name="credits_installerx">Handing an update to an installer app, hiding the icon, and the dial code</string>
+    <string name="credits_installerx">Hiding the icon and the dial code</string>
     <string name="rules_cancel">Cancel</string>
     <string name="tl_compose">Jetpack Compose</string>
     <string name="tl_compose_summary">Apache-2.0</string>
@@ -147,29 +146,6 @@
     <string name="fp_sink_system">Follow system</string>
     <string name="fp_sink_always">Always sink</string>
     <string name="fp_sink_never">Never sink</string>
-    <string name="get_update">Get update</string>
-    <string name="get_update_detail">Check for software updates and new features</string>
-    <string name="update_available">Update available: %1$s</string>
-    <string name="get_update_directly">Get update directly</string>
-    <string name="get_update_directly_desc">Install the update straight from GitHub</string>
-    <string name="updating">Updating…</string>
-    <string name="update_notes_title">Changelog</string>
-    <string name="update_notes_empty">(This release has no notes)</string>
-    <string name="update_cancel">Cancel</string>
-    <string name="update_close">Close</string>
-    <string name="update_failed">Update failed: %1$s</string>
-    <string name="tl_okhttp">OkHttp</string>
-    <string name="tl_okhttp_summary">Apache-2.0</string>
-    <string name="tl_serialization">kotlinx.serialization</string>
-    <string name="tl_serialization_summary">Apache-2.0</string>
-    <string name="update_status_title">Update</string>
-    <string name="update_no_installer">No app on this device can install an APK - install it from a file manager</string>
-    <string name="update_confirm">Update</string>
-    <string name="update_not_ours">The download was not signed by this project; discarded</string>
-    <string name="update_latest">Already on the latest version</string>
-    <string name="update_current_version">Current version %1$s</string>
-    <string name="update_percent">%1$d%%</string>
-    <string name="update_downloading">Updating</string>
     <string name="restart_scope">Restart all scoped apps</string>
 
     <!-- The features page is a list of cards, each opening a page of its own. -->
@@ -179,6 +155,8 @@
     <string name="features_shade_summary">Flowing light</string>
     <string name="features_mini_title">Lock screen super island</string>
     <string name="features_mini_summary">Media controls, gestures, size and material</string>
+    <string name="notifications_unmerge">Show notifications separately</string>
+    <string name="notifications_unmerge_summary">Show each notification separately, including notifications from the same app, on the lock screen and in the unlocked shade</string>
     <string name="features_island_title">Xiaomi super island</string>
     <string name="features_island_summary">The length of the island at the top of the screen while playing</string>
     <string name="island_custom">Custom island length</string>

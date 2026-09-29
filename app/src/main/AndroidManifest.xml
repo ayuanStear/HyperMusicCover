@@ -1,11 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!--
-        The self-updater. INTERNET is install-time and never prompted. There is deliberately no
-        REQUEST_INSTALL_PACKAGES: this app does not install anything itself any more, it hands the
-        downloaded APK to an installer app, and the permission that matters is that app's.
-    -->
+    <!-- Lyrics providers use the network directly. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>
@@ -14,15 +10,6 @@
              lookup throws NameNotFound even when the package is there. -->
         <package android:name="com.lidesheng.lyricinfo" />
         <package android:name="com.lidesheng.lyricinfo.lite" />
-        <!--
-            The APK intent, so the updater can tell a device with no installer at all apart from
-            one that took the file. No installer is named: which app handles this is the user's
-            choice, made in Settings.
-        -->
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:mimeType="application/vnd.android.package-archive" />
-        </intent>
     </queries>
 
     <application
@@ -146,18 +133,5 @@
         <meta-data android:name="xposedminversion" android:value="102" />
         <meta-data android:name="xposedscope" android:resource="@array/xposedscope" />
 
-        <!--
-            Only ever serves the downloaded release to an installer app. Not exported, and the
-            single path it exposes is a cache directory this app clears on every attempt.
-        -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
     </application>
 </manifest>

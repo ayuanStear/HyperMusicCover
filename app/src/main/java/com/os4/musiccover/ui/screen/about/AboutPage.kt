@@ -1,5 +1,5 @@
 /*
- * Adapted from HyperNavBar (https://github.com/HyperNavBar/HyperNavBar),
+ * Adapted from HyperNavBar,
  * licensed under the Apache License, Version 2.0.
  *
  * Changes in HyperMusicCover: package renamed, project links and strings replaced,
@@ -8,8 +8,6 @@
 package com.os4.musiccover.ui.screen.about
 
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -42,7 +40,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
@@ -86,9 +83,6 @@ fun AboutPageContent(
     isBlurEnabled: Boolean = true,
     isCurrent: () -> Boolean = { true },
 ) {
-    // Owns the check, the install and the four dialogs; see UpdateUi.kt. It has to sit above the
-    // Scaffold because the dialogs open their own windows and cannot be nested in the page body.
-    val update = rememberUpdateController(isCurrent)
     val topAppBarScrollBehavior = MiuixScrollBehavior()
     val lazyListState = rememberLazyListState()
 
@@ -148,12 +142,9 @@ fun AboutPageContent(
                 openCreditsPage = openCreditsPage,
                 isBlurEnabled = isBlurEnabled,
                 isCurrent = isCurrent,
-                update = update,
             )
         }
     }
-
-    UpdateDialogs(update)
 }
 
 @Composable
@@ -166,7 +157,6 @@ private fun AboutContent(
     openCreditsPage: () -> Unit,
     isBlurEnabled: Boolean,
     isCurrent: () -> Boolean,
-    update: UpdateController,
 ) {
     val uriHandler = LocalUriHandler.current
     // `rememberBlurBackdrop` answers "can this device blur", not "did the user ask for it": on
@@ -219,7 +209,6 @@ private fun AboutContent(
     val density = LocalDensity.current
     var logoHeightDp by remember { mutableStateOf(300.dp) }
     val appName = stringResource(R.string.app_name)
-    val ctx = LocalContext.current
     // BuildConfig rather than the installed package's metadata: it is the same string for this
     // build, and it is not a call into the package manager on a composition that the pager can
     // trigger at any time.
@@ -270,45 +259,6 @@ private fun AboutContent(
                         .fillParentMaxHeight()
                         .padding(bottom = scrollPadding.calculateBottomPadding()),
                 ) {
-                    Card(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .then(
-                                if (contentBackdrop != null) {
-                                    Modifier.textureBlur(
-                                        backdrop = contentBackdrop,
-                                        shape = RoundedCornerShape(16.dp),
-                                        blurRadius = blurRadius,
-                                        noiseCoefficient = noiseCoefficient,
-                                        colors = BlurDefaults.blurColors(
-                                            blendColors = cardBlend,
-                                            brightness = brightness,
-                                            contrast = contrast,
-                                            saturation = saturation,
-                                        ),
-                                    )
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                        colors = CardDefaults.defaultColors(
-                            if (contentBackdrop != null) Color.Transparent else colorScheme.surfaceContainer,
-                            Color.Transparent,
-                        ),
-                    ) {
-                        UpdateRows(
-                            update = update.update,
-                            installing = update.installing,
-                            onGetUpdate = update.showLinks,
-                            onDirectUpdate = { update.directUpdate(ctx) },
-                        )
-                    }
-                    // The card that used to sit here - the project address, the Telegram and QQ
-                    // groups and a feedback link - is gone (2026-09-27). The address it carried is
-                    // the one the 获取更新 dialog already offers, and the two groups and the issue
-                    // tracker were the only rows on this page that led somewhere other than this
-                    // app's own licences and credits. What is left is the update row above, the
-                    // licence card below, and nothing that repeats either.
                     Card(
                         modifier = Modifier
                             .padding(horizontal = 12.dp)
@@ -438,26 +388,11 @@ private fun AboutContent(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 MiuixText(
-                    // The version is tappable for the same reason the "update available" line
-                    // below it is: the changelog is the one thing a person wants after seeing a
-                    // version number, and here it is one tap away. Indication stays off so the
-                    // press does not paint a band of shadow across the whole centred text.
-                    modifier = Modifier
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = { update.showVersionNotes() },
-                        )
-                        .padding(vertical = 4.dp),
+                    modifier = Modifier.padding(vertical = 4.dp),
                     color = colorScheme.onSurfaceVariantSummary,
                     text = versionName,
                     fontSize = 14.sp,
                     textAlign = TextAlign.Center,
-                )
-                UpdateHint(
-                    modifier = Modifier.fillMaxWidth(),
-                    update = update.update,
-                    onShowNotes = update.showNotes,
                 )
             }
         }

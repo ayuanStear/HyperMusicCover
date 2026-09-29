@@ -866,11 +866,13 @@ object MiniPlayerRuntime {
                 // From here the gesture moves the pill; it hears no more of it itself.
                 routedDrag = true
                 if (!routedSmall) dispatchTo(target, ev, MotionEvent.ACTION_CANCEL)
-                // Sideways on a row of islands, the pull is the islands'; alone, it is a skip.
+                // The music capsule owns sideways skips even with another island beside it.
+                // Only the small island or a notification capsule cycles through islands.
                 routedOwner = live().firstOrNull { it.pill() === target }
                 routedIsland = routedOwner?.islandCount()?.let { it >= 2 } == true &&
                     routedOwner?.exchangeRunning() != true &&
-                    kotlin.math.abs(dx) > kotlin.math.abs(dy)
+                    kotlin.math.abs(dx) > kotlin.math.abs(dy) &&
+                    (routedSmall || !target.skippable)
                 // Up on the music: the rows its card takes along are asked for now, so they are
                 // there by the time the pull opens it.
                 if (!routedIsland && dy < 0f && -dy >= kotlin.math.abs(dx)) {
@@ -1372,11 +1374,11 @@ object MiniPlayerRuntime {
     }
 
     internal fun observeSession(token: Any, packageName: String): Boolean {
-        val changed = synchronized(selectionLock) { sessionSelection.observe(token) }
+        val changed = synchronized(selectionLock) { sessionSelection.observe(token, packageName) }
         if (changed) {
             restoreScene = false
             Xp.log("MCMini: media session -> $packageName@${Integer.toHexString(token.hashCode())}; " +
-                "dynamic choice reset to mini")
+                "dynamic choice ${if (nativeRequested(token)) "preserved as native" else "reset to mini"}")
         }
         return changed
     }
@@ -1512,6 +1514,25 @@ private class MiniPlayerController(
     private var forceHeaderRefresh = true
     private var lastPresentationLog = ""
     private var lastActive = false
+    /**
+     * A skip can briefly remove the old controller from the usable session list before the
+     * replacement metadata/state arrives. Keep the dynamic card/pill choice through that gap;
+     * only end the session if the gap remains long enough to look like a real stop.
+     */
+    private var pendingSessionEndToken: Any? = null
+    private val pendingSessionEnd = Runnable {
+        val token = pendingSessionEndToken ?: return@Runnable
+        pendingSessionEndToken = null
+        val current = controller
+        if (current != null && current.sessionToken == token && isUsable(current)) return@Runnable
+        MiniPlayerRuntime.endSession(token, "playback inactive after grace period")
+        if (current != null && current.sessionToken == token) {
+            runCatching { current.unregisterCallback(mediaListener) }
+            controller = null
+            followLive(null)
+        }
+        scheduleRefresh()
+    }
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         configStale = true
         scheduleRefresh()
@@ -6384,7 +6405,8 @@ private class MiniPlayerController(
     }.getOrNull()
 
     /**
-     * The stack island's rows laid out as the lock screen's own list, one row an app: the stack
+     * The stack island's rows laid out as the lock screen's own list, one row a notification
+     * (LockIslands promotes grouped children while the stack island is released): the stack
      * asked to do what a tap on its pile does (NotificationRowViewBinder's click on a stacked row:
      * NotificationContainerViewModel._onClicked, read 2026-09-26). The keyguard then moves its
      * notifications' top up to the list's, the clock pressed down to its smallest for them
@@ -6394,6 +6416,12 @@ private class MiniPlayerController(
      * a pile yet to be tapped - the rows only just given back - and never once it is a list.
      */
     private fun showStackAsList(why: String) {
+        // The lock-screen setting owns this choice. In NUMBER and STACK modes an island opening
+        // must leave SystemUI in its configured representation instead of forcing LIST.
+        if (LockIslands.currentDisplayState() != LockIslands.DisplayState.LIST) {
+            trace("list not requested ($why): display=${LockIslands.currentDisplayState()}")
+            return
+        }
         listAskedAt = android.os.SystemClock.uptimeMillis()
         listWhy = why
         listClicked = false
@@ -6808,6 +6836,8 @@ private class MiniPlayerController(
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         runCatching { host.viewTreeObserver.removeOnPreDrawListener(preDraw) }
         runCatching { sessions?.removeOnActiveSessionsChangedListener(sessionListener) }
+        handler.removeCallbacks(pendingSessionEnd)
+        pendingSessionEndToken = null
         runCatching { controller?.unregisterCallback(mediaListener) }
         followLive(null)
         morph?.cancel()
@@ -7356,19 +7386,28 @@ private class MiniPlayerController(
         // Active-session lists can be momentarily empty while a player advances its queue. Keep a
         // still-usable controller instead of flashing the vendor card during that bookkeeping gap.
         val chosen = chooseController() ?: controller?.takeIf(::isUsable)
+        if (chosen != null && pendingSessionEndToken != null) {
+            handler.removeCallbacks(pendingSessionEnd)
+            pendingSessionEndToken = null
+        }
         if (chosen?.sessionToken != controller?.sessionToken) {
             val previous = controller
             if (chosen == null && previous != null && !isUsable(previous)) {
-                MiniPlayerRuntime.endSession(previous.sessionToken, "playback inactive")
+                if (pendingSessionEndToken != previous.sessionToken) {
+                    handler.removeCallbacks(pendingSessionEnd)
+                    pendingSessionEndToken = previous.sessionToken
+                    handler.postDelayed(pendingSessionEnd, SESSION_END_GRACE_MS)
+                }
+            } else {
+                runCatching { previous?.unregisterCallback(mediaListener) }
+                controller = chosen
+                runCatching { chosen?.registerCallback(mediaListener, handler) }
+                followLive(chosen)
+                cachedCover = null
+                // Another player: its artwork, not the last one's.
+                thumbShown = null
+                lastTrack = ""
             }
-            runCatching { previous?.unregisterCallback(mediaListener) }
-            controller = chosen
-            runCatching { chosen?.registerCallback(mediaListener, handler) }
-            followLive(chosen)
-            cachedCover = null
-            // Another player: its artwork, not the last one's.
-            thumbShown = null
-            lastTrack = ""
         }
         val music = controller?.takeIf(::isUsable)
         val notes = LockIslands.notes
@@ -8610,6 +8649,7 @@ private const val SMALL_NUDGE_DAMPING = 0.8f
 
 /** How long the pill waits, down, for a scene its morph has just landed into. */
 private const val SCENE_WAIT_MS = 1000L
+private const val SESSION_END_GRACE_MS = 2000L
 
 /** After the doze, the buttons are the lock screen's again within this long whatever happens. */
 private const val HOLD_MAX_MS = 2000L

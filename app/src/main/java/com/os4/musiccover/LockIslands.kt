@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.service.notification.StatusBarNotification
 import android.view.View
 import java.lang.ref.WeakReference
@@ -182,6 +183,24 @@ internal object LockIslands {
     /** The stack island tapped open: all of its notifications back in the stack, new ones too. */
     private var stackOut = false
 
+    /** When enabled, grouped notifications stay separate after the stack is released. */
+    @Volatile
+    var unmergeNotifications: Boolean = false
+        private set
+
+    private val hookedPromoterClasses = HashSet<Class<*>>()
+    private val pipelinePlugins = CopyOnWriteArrayList<WeakReference<Any>>()
+    private val hookedNotificationFilterClasses = HashSet<Class<*>>()
+    private var notificationFilterInstalled = false
+    private var pipelineHookInstalled = false
+
+    /** HyperOS maps the lock-screen notification setting to these three pipeline states. */
+    enum class DisplayState { NUMBER, STACK, LIST }
+
+    @Volatile
+    var displayState: DisplayState = DisplayState.STACK
+        private set
+
     fun install(classLoader: ClassLoader) {
         focusCheck = runCatching {
             Xp.findClass("com.android.systemui.statusbar.notification.utils.FocusUtils", classLoader)
@@ -211,10 +230,120 @@ internal object LockIslands {
                 result
             }
         }.onFailure { Xp.log("MCIsland: run end unavailable: $it") }
+        installNotificationPipeline(classLoader)
+    }
+
+    /** Changes the common notification pipeline and asks it to rebuild immediately. */
+    fun setUnmergeNotifications(value: Boolean) {
+        if (unmergeNotifications == value) return
+        unmergeNotifications = value
+        invalidate("notification grouping ${if (value) "disabled" else "restored"}")
+        for (ref in pipelinePlugins) {
+            val plugin = ref.get() ?: continue
+            runCatching { Xp.callMethod(plugin, "invalidateList", "MusicCover: grouping") }
+        }
+    }
+
+    /**
+     * HyperOS registers the pipeline plugins directly in ShadeListBuilder's private lists. The
+     * old public addPromoter/addFinalizeFilter API is absent on this build, so inspect those
+     * lists immediately before each build and hook the concrete plugins that are actually used.
+     */
+    private fun installNotificationPipeline(classLoader: ClassLoader) {
+        runCatching {
+            val builder = Xp.findClass(
+                "com.android.systemui.statusbar.notification.collection.ShadeListBuilder",
+                classLoader,
+            )
+            Xp.hookAll(builder, "buildList") { chain ->
+                watchPipelinePlugins(chain.thisObject)
+                chain.proceed()
+            }
+            pipelineHookInstalled = true
+            Xp.log("MCIsland: notification pipeline bridge installed")
+        }.onFailure { Xp.log("MCIsland: notification pipeline bridge unavailable: $it") }
+    }
+
+    private fun watchPipelinePlugins(builder: Any) {
+        runCatching {
+            (Xp.getObjectField(builder, "mNotifPromoters") as? Iterable<*>)
+                ?.forEach { if (it != null) { rememberPipelinePlugin(it); watchPromoter(it) } }
+            (Xp.getObjectField(builder, "mNotifFinalizeFilters") as? Iterable<*>)
+                ?.forEach { if (it != null) { rememberPipelinePlugin(it); watchNotificationFilter(it) } }
+        }.onFailure { Xp.log("MCIsland: notification pipeline scan failed: $it") }
+    }
+
+    /** WeakReference itself uses identity equality, so addIfAbsent cannot deduplicate its target. */
+    private fun rememberPipelinePlugin(plugin: Any) {
+        synchronized(pipelinePlugins) {
+            pipelinePlugins.removeAll { it.get() == null }
+            if (pipelinePlugins.none { it.get() === plugin }) {
+                pipelinePlugins.add(WeakReference(plugin))
+            }
+        }
+    }
+
+    private fun watchNotificationFilter(notificationFilter: Any) {
+        synchronized(hookedNotificationFilterClasses) {
+            if (!hookedNotificationFilterClasses.add(notificationFilter.javaClass)) return
+        }
+        runCatching {
+            Xp.hookAll(notificationFilter.javaClass, "shouldFilterOut") { chain ->
+                val filtered = chain.proceed() as Boolean
+                filtered || shouldFilterGroupSummary(chain.args.firstOrNull())
+            }
+            notificationFilterInstalled = true
+        }.onFailure {
+            synchronized(hookedNotificationFilterClasses) {
+                hookedNotificationFilterClasses.remove(notificationFilter.javaClass)
+            }
+            Xp.log("MCIsland: notification summary filter hook failed: $it")
+        }
+    }
+
+    private fun shouldFilterGroupSummary(entry: Any?): Boolean {
+        if (!unmergeNotifications || entry == null) return false
+        val sbn = runCatching {
+            Xp.getObjectField(entry, "mSbn") as? StatusBarNotification
+        }.getOrNull() ?: return false
+        val notification = sbn.notification ?: return false
+        if (!sbn.isGroup || notification.flags and Notification.FLAG_GROUP_SUMMARY == 0) {
+            return false
+        }
+        // The media notification has its own SystemUI grouping/card path. Leave it to the OEM so
+        // the music card and its actions are not removed as a side effect of this switch.
+        return !notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)
+    }
+
+    private fun watchPromoter(promoter: Any) {
+        synchronized(hookedPromoterClasses) {
+            if (!hookedPromoterClasses.add(promoter.javaClass)) return
+        }
+        runCatching {
+            Xp.hookAll(promoter.javaClass, "shouldPromoteToTopLevel") { chain ->
+                val promoted = chain.proceed() as Boolean
+                promoted || shouldPromoteUngrouped(chain.args.firstOrNull())
+            }
+        }.onFailure {
+            synchronized(hookedPromoterClasses) { hookedPromoterClasses.remove(promoter.javaClass) }
+            Xp.log("MCIsland: notification promoter hook failed: $it")
+        }
+    }
+
+    private fun shouldPromoteUngrouped(entry: Any?): Boolean {
+        if (!unmergeNotifications || entry == null) return false
+        val sbn = runCatching {
+            Xp.getObjectField(entry, "mSbn") as? StatusBarNotification
+        }.getOrNull() ?: return false
+        val n = sbn.notification ?: return false
+        if (!sbn.isGroup || n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return false
+        return !n.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)
     }
 
     /** For `op mini`: what the filter has, and whether the stack is leaving it out. */
     fun describe(): String = "islands active=$active cover=$cover filter=${filter?.get() != null} " +
+        "summaryFilter=$notificationFilterInstalled " +
+        "pipeline=$pipelineHookInstalled display=$displayState " +
         "released=${released.size} stack=${stackMembers.size}${if (stackOut) "/out" else ""} notes=" + notes.joinToString(",") {
             (if (it.focus) "F:" else "") + (if (it.redacted) "R:" else "") + it.pkg +
                 (if (!it.focus || it.redacted) "<${it.iconFrom}>" else "") +
@@ -391,7 +520,8 @@ internal object LockIslands {
         if (filter?.get() !== filterObject) filter = WeakReference(filterObject)
         watchScreen()
         if (hidden) return true
-        val entry = args.firstOrNull() ?: return false
+        val entry = args.firstOrNull()
+        if (entry == null) return false
         if (!lockedOrLocking(filterObject)) {
             // Unlocked: what a tap put back is an island again on the next lock screen.
             released.clear()
@@ -537,10 +667,12 @@ internal object LockIslands {
         pending.clear()
         stamp(all, lockedRun)
         lockedRun = false
+        currentDisplayState()
         // A group shows as its children; its summary only when it has none here.
         val grouped = all.filter { !it.summary && it.group != null }.mapNotNull { it.group }.toSet()
         val shown = all.filter { !(it.summary && it.group in grouped) }
-        // Every notification but the focus ones in one island, the newest in front.
+        // The row has only a few physical island positions, so ordinary notifications share one
+        // logical stack island. The system setting controls the native stack after it is opened.
         val members = shown.filter { !it.focus }.sortedWith(bigFirst)
         stackMembers = members.map { it.key }
         stackNote = aggregate(members)
@@ -571,10 +703,23 @@ internal object LockIslands {
         }
     }
 
+    /** The setting used by SystemUI's KeyguardNotificationState repository. */
+    fun currentDisplayState(): DisplayState {
+        val ctx = Main.sAppCtx ?: return displayState
+        val value = runCatching {
+            Settings.System.getInt(ctx.contentResolver, "default_keyguard_notif_state", 2)
+        }.getOrDefault(2)
+        return when (value) {
+            3 -> DisplayState.NUMBER
+            1 -> DisplayState.LIST
+            else -> DisplayState.STACK
+        }.also { displayState = it }
+    }
+
     /**
-     * The stack island: its newest notification's picture, title and line, with how many there
-     * are when more than one. The same object while its notifications are the same readings, so
-     * an unchanged run changes nothing (commit).
+     * The stack island's closed representation. Its rows remain in [stackMembers] so opening the
+     * island can reveal every notification; the closed label never pretends the newest message is
+     * the whole stack.
      */
     private fun aggregate(members: List<Note>): Note? {
         if (members.isEmpty()) {
@@ -588,8 +733,9 @@ internal object LockIslands {
         stackFrom = members
         val lead = members.first()
         val n = members.size
-        return Note(STACK_KEY, lead.pkg, lead.title,
-            if (n > 1) "$n 条通知 · ${lead.text}" else lead.text,
+        val title = if (n > 1) "通知" else lead.title
+        val text = if (n > 1) "$n 条通知" else lead.text
+        return Note(STACK_KEY, lead.pkg, title, text,
             lead.icon, focus = false, time = lead.time, intent = lead.intent, group = null,
             summary = false, redacted = lead.redacted, since = members.maxOf { it.since }, iconFrom = lead.iconFrom)
     }

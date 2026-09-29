@@ -1,5 +1,5 @@
 /*
- * Adapted from KernelSU (https://github.com/tiann/KernelSU),
+ * Adapted from KernelSU,
  * licensed under the GNU General Public License, version 3.
  *
  * Distributed here as part of an AGPL-3.0 work: GPLv3 section 13 and AGPLv3

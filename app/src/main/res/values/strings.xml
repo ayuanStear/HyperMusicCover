@@ -77,7 +77,6 @@
     <string name="credits_hypernavbar">整套界面骨架：主题、悬浮导航栏、液态玻璃、背景模糊、关于页和多语言</string>
     <string name="credits_miuix">这个界面用到的全部组件</string>
     <string name="credits_liquid_glass">液态玻璃的透镜、内阴影和鲜艳度</string>
-    <string name="credits_markdown_css">更新日志的排版样式</string>
     <string name="credits_cialloum">方形封面卡片、小封面与大封面之间的形变动画，以及锁屏歌词的位置、字号和字重设置</string>
     <string name="credits_hyperchanger">锁屏超级岛（由 btm_m 移植），以及解除景深限制、锁屏搭配数量上限、时钟冒号、全局主题下的柔光玻璃</string>
     <string name="credits_leaf">视频壁纸和景深视频壁纸的支持</string>
@@ -88,7 +87,7 @@
     <string name="credits_lyricinfo">播放器歌词的来源之一</string>
     <string name="credits_hle">QQ 音乐、酷我、TTML Hub 取词与歌曲匹配规则</string>
     <string name="credits_lsposed">模块赖以运行的框架</string>
-    <string name="credits_installerx">把更新交给安装器、隐藏图标和拨号密令的做法</string>
+    <string name="credits_installerx">隐藏图标和拨号密令的做法</string>
     <string name="rules_cancel">取消</string>
     <string name="tl_compose">Jetpack Compose</string>
     <string name="tl_compose_summary">Apache-2.0</string>
@@ -157,29 +156,6 @@
     <!-- px, not dp: the value is added to a pixel bound SystemUI computed for this screen, and
          that is what makes it comparable with the numbers in the notes. -->
     <string name="fp_sink_px_summary">在「始终下沉」的基础上再下移的像素</string>
-    <string name="get_update">获取更新</string>
-    <string name="get_update_detail">检查软件更新和新功能</string>
-    <string name="update_available">有可用更新：%1$s</string>
-    <string name="get_update_directly">直接更新</string>
-    <string name="get_update_directly_desc">直接从 Github 安装更新</string>
-    <string name="updating">正在更新…</string>
-    <string name="update_notes_title">更新日志</string>
-    <string name="update_notes_empty">（本次发布没有说明）</string>
-    <string name="update_cancel">取消</string>
-    <string name="update_close">关闭</string>
-    <string name="update_failed">更新失败：%1$s</string>
-    <string name="tl_okhttp">OkHttp</string>
-    <string name="tl_okhttp_summary">Apache-2.0</string>
-    <string name="tl_serialization">kotlinx.serialization</string>
-    <string name="tl_serialization_summary">Apache-2.0</string>
-    <string name="update_status_title">更新</string>
-    <string name="update_no_installer">没有找到可以安装 APK 的应用，请在文件管理器里手动安装</string>
-    <string name="update_confirm">更新</string>
-    <string name="update_not_ours">更新包的签名不是本项目的，已丢弃</string>
-    <string name="update_latest">已经是最新版本</string>
-    <string name="update_current_version">当前版本 %1$s</string>
-    <string name="update_percent">%1$d%%</string>
-    <string name="update_downloading">正在更新</string>
     <string name="restart_scope">重启全部作用域</string>
 
     <!-- The features page is a list of cards, each opening a page of its own. -->
@@ -189,6 +165,8 @@
     <string name="features_shade_summary">动态流光</string>
     <string name="features_mini_title">锁屏超级岛</string>
     <string name="features_mini_summary">媒体控制、手势、尺寸与材质</string>
+    <string name="notifications_unmerge">通知不合并</string>
+    <string name="notifications_unmerge_summary">同一应用的通知逐条显示，锁屏和解锁后的通知栏都生效</string>
     <string name="features_island_title">小米超级岛</string>
     <string name="features_island_summary">播放时屏幕顶部那颗岛的长度</string>
     <string name="island_custom">自定义超级岛长度</string>

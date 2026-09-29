@@ -98,14 +98,27 @@ internal class ShortcutDisc(context: Context) : FrameLayout(context) {
     private var maskedW = -1
     private var maskedH = -1
     private var maskedDx = Int.MIN_VALUE
+    private var maskedFrameW = -1
+    private var maskedFrameH = -1
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // Returning from a capsule flight can resize the frame without changing the circle.
+        // Its mask is in frame coordinates, so the old rectangle must not survive that resize.
+        invalidateOutline()
+        applyEdgeMask()
+    }
 
     private fun applyEdgeMask() {
         if (shapeW <= 1 || shapeH <= 1 || width <= 1 || height <= 1) return
-        if (shapeW == maskedW && shapeH == maskedH && shapeDx == maskedDx) return
+        if (shapeW == maskedW && shapeH == maskedH && shapeDx == maskedDx &&
+            width == maskedFrameW && height == maskedFrameH) return
+        val shader = edgeShader ?: (EdgeMask.shader() ?: return).also { edgeShader = it }
         maskedW = shapeW
         maskedH = shapeH
         maskedDx = shapeDx
-        val shader = edgeShader ?: (EdgeMask.shader() ?: return).also { edgeShader = it }
+        maskedFrameW = width
+        maskedFrameH = height
         val l = ((width - shapeW) / 2 + shapeDx).toFloat()
         val t = ((height - shapeH) / 2).toFloat()
         EdgeMask.apply(this, shader, l, t, l + shapeW, t + shapeH,
